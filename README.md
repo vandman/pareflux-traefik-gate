@@ -1,5 +1,7 @@
 # PareFlux Traefik Gate
 
+Documentation: **English** | [Français](LISEZMOI.md)
+
 PareFlux Gate is an Apache-2.0 Traefik HTTP middleware for CrowdSec decisions,
 CrowdSec AppSec, and fast in-process decision caching.
 
@@ -214,10 +216,16 @@ Traefik image and pass end-to-end request benchmarks.
 
 ## Repositories and public releases
 
-GitLab is the primary development repository and contains intermediate commits
-and development releases. GitHub is the public distribution and contribution
-channel because the Traefik Plugin Catalog only accepts public GitHub
-repositories.
+PareFlux is maintained by a French author who wants complete, first-class
+documentation in French. A complete English version is maintained in parallel
+because English is the de facto international language for technical
+collaboration and the Traefik ecosystem.
+
+The [GitLab repository](https://github.com/vandman/pareflux-traefik-gate)
+is the primary development repository and contains intermediate commits and
+development releases. The [GitHub repository](https://github.com/vandman/pareflux-traefik-gate)
+is the public distribution and contribution channel because the Traefik Plugin
+Catalog only accepts public GitHub repositories.
 
 Only stable snapshots are promoted to GitHub. A protected GitLab tag named
 `publish/vX.Y.Z` creates one public commit and the immutable `vX.Y.Z` GitHub
