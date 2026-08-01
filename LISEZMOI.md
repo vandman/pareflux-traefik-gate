@@ -72,7 +72,7 @@ services:
     image: traefik:v3.7.9
     command:
       - --experimental.plugins.parefluxgate.modulename=github.com/vandman/pareflux-traefik-gate
-      - --experimental.plugins.parefluxgate.version=v0.1.12
+      - --experimental.plugins.parefluxgate.version=v0.1.13
 ```
 
 La seconde partie crée un middleware **dynamique** et l'attache au routeur :
@@ -107,6 +107,58 @@ docker compose down --volumes
 Ce fichier README sert aussi de description dans le catalogue de plugins
 Traefik : l'exemple d'installation et l'explication opérationnelle seront donc
 visibles dans le catalogue comme sur GitHub.
+
+### Choix du stockage : local, Redis, PostgreSQL ou MariaDB
+
+PostgreSQL et MariaDB sont bien pris en charge, mais leur configuration se fait
+sur CrowdSec LAPI et non sur le middleware PareFlux. Cette séparation clarifie
+le rôle de chaque stockage :
+
+| Stockage | Utilisé par | Rôle |
+| --- | --- | --- |
+| Cache TTL dans le processus | PareFlux Gate | Cache éphémère par défaut pour un processus Traefik |
+| Redis | PareFlux Gate | Cache éphémère partagé optionnel entre plusieurs processus Traefik |
+| SQLite | CrowdSec LAPI | Stockage persistant par défaut pour une installation simple sur un nœud |
+| PostgreSQL ou MariaDB | CrowdSec LAPI | Stockage LAPI persistant adapté aux installations plus importantes ou répliquées |
+
+Changer la base CrowdSec ne modifie pas les labels PareFlux : Gate continue de
+se connecter à `crowdsec:8080` et CrowdSec possède la connexion à la base.
+
+Pour lancer l'exemple complet avec PostgreSQL :
+
+```bash
+cd examples/compose
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.postgresql.yml \
+  up --detach --wait
+curl --header 'Host: pareflux.localhost' http://127.0.0.1:18080/
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.postgresql.yml \
+  down --volumes
+```
+
+Ou pour lancer la même pile avec MariaDB :
+
+```bash
+cd examples/compose
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.mariadb.yml \
+  up --detach --wait
+curl --header 'Host: pareflux.localhost' http://127.0.0.1:18080/
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.mariadb.yml \
+  down --volumes
+```
+
+Les mots de passe inclus dans ces exemples sont des valeurs jetables. En
+production, utilisez des secrets Docker ou un autre gestionnaire de secrets,
+TLS vers une base externe et des sauvegardes durables. Le changement de base
+d'une installation CrowdSec existante ne migre pas automatiquement ses
+machines, clefs de remédiation, alertes ou décisions existantes.
 
 ### Architecture
 

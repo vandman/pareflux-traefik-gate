@@ -1,0 +1,16 @@
+###############################################################################
+# CrowdSec MariaDB storage override
+# FR: Configure la LAPI CrowdSec de démonstration pour persister ses machines,
+#     alertes, décisions et clefs de remédiation dans MariaDB.
+# EN: Configures the example CrowdSec LAPI to persist its machines, alerts,
+#     decisions, and remediation keys in MariaDB.
+# Called by: CrowdSec container with docker-compose.mariadb.yml
+# Calls: MariaDB service on the internal Compose network
+###############################################################################
+db_config:
+  type: mysql
+  user: crowdsec
+  password: ${CROWDSEC_DB_PASSWORD}
+  db_name: crowdsec
+  host: mariadb
+  port: 3306

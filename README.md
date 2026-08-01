@@ -71,7 +71,7 @@ services:
     image: traefik:v3.7.9
     command:
       - --experimental.plugins.parefluxgate.modulename=github.com/vandman/pareflux-traefik-gate
-      - --experimental.plugins.parefluxgate.version=v0.1.12
+      - --experimental.plugins.parefluxgate.version=v0.1.13
 ```
 
 The second part creates a **dynamic** middleware and attaches it to the router:
@@ -105,6 +105,57 @@ docker compose down --volumes
 This README is also the description displayed by the Traefik Plugin Catalog,
 so the installation example and the operational explanation are available in
 the catalog as well as on GitHub.
+
+### Storage choices: local, Redis, PostgreSQL, or MariaDB
+
+PostgreSQL and MariaDB are supported, but they are configured on CrowdSec LAPI,
+not on the PareFlux middleware. This separation keeps each storage role clear:
+
+| Storage | Used by | Purpose |
+| --- | --- | --- |
+| In-process TTL cache | PareFlux Gate | Default ephemeral decision cache for one Traefik process |
+| Redis | PareFlux Gate | Optional shared ephemeral cache for several Traefik processes |
+| SQLite | CrowdSec LAPI | Default persistent storage for a simple single-node installation |
+| PostgreSQL or MariaDB | CrowdSec LAPI | Persistent LAPI storage suitable for larger or replicated installations |
+
+Changing the CrowdSec database does not change the PareFlux labels: Gate still
+connects to `crowdsec:8080`, and CrowdSec owns the database connection.
+
+Run the complete example with PostgreSQL:
+
+```bash
+cd examples/compose
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.postgresql.yml \
+  up --detach --wait
+curl --header 'Host: pareflux.localhost' http://127.0.0.1:18080/
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.postgresql.yml \
+  down --volumes
+```
+
+Or run the same stack with MariaDB:
+
+```bash
+cd examples/compose
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.mariadb.yml \
+  up --detach --wait
+curl --header 'Host: pareflux.localhost' http://127.0.0.1:18080/
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.mariadb.yml \
+  down --volumes
+```
+
+The database passwords embedded in these examples are disposable defaults.
+Use Docker secrets or another secret manager, TLS to an external database, and
+durable backups in production. Switching an existing CrowdSec installation to
+a new database does not migrate its existing machines, remediation keys,
+alerts, or decisions automatically.
 
 ### Architecture
 

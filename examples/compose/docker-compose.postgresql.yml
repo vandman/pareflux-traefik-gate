@@ -1,0 +1,37 @@
+###############################################################################
+# PareFlux Gate PostgreSQL example extension
+# FR: Remplace le stockage SQLite de CrowdSec LAPI par PostgreSQL tout en
+#     conservant le même plugin PareFlux et le même middleware Traefik.
+# EN: Replaces CrowdSec LAPI SQLite storage with PostgreSQL while keeping the
+#     same PareFlux plugin and Traefik middleware.
+# Called by: users extending examples/compose/docker-compose.yml
+# Calls: CrowdSec and PostgreSQL containers
+###############################################################################
+services:
+  crowdsec:
+    environment:
+      CROWDSEC_DB_PASSWORD: ${CROWDSEC_DB_PASSWORD:-pareflux-postgresql-demo-only-password}
+    volumes:
+      - ./crowdsec-postgresql.yaml:/etc/crowdsec/config.yaml.local:ro
+    depends_on:
+      postgresql:
+        condition: service_healthy
+
+  postgresql:
+    image: postgres:18.4-bookworm
+    environment:
+      POSTGRES_DB: crowdsec
+      POSTGRES_USER: crowdsec
+      POSTGRES_PASSWORD: ${CROWDSEC_DB_PASSWORD:-pareflux-postgresql-demo-only-password}
+    volumes:
+      - postgresql-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready --username=crowdsec --dbname=crowdsec"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  postgresql-data:

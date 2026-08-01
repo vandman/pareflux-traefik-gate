@@ -1,0 +1,38 @@
+###############################################################################
+# PareFlux Gate MariaDB example extension
+# FR: Remplace le stockage SQLite de CrowdSec LAPI par MariaDB tout en
+#     conservant le même plugin PareFlux et le même middleware Traefik.
+# EN: Replaces CrowdSec LAPI SQLite storage with MariaDB while keeping the same
+#     PareFlux plugin and Traefik middleware.
+# Called by: users extending examples/compose/docker-compose.yml
+# Calls: CrowdSec and MariaDB containers
+###############################################################################
+services:
+  crowdsec:
+    environment:
+      CROWDSEC_DB_PASSWORD: ${CROWDSEC_DB_PASSWORD:-pareflux-mariadb-demo-only-password}
+    volumes:
+      - ./crowdsec-mariadb.yaml:/etc/crowdsec/config.yaml.local:ro
+    depends_on:
+      mariadb:
+        condition: service_healthy
+
+  mariadb:
+    image: mariadb:12.3.2-noble
+    environment:
+      MARIADB_DATABASE: crowdsec
+      MARIADB_USER: crowdsec
+      MARIADB_PASSWORD: ${CROWDSEC_DB_PASSWORD:-pareflux-mariadb-demo-only-password}
+      MARIADB_ROOT_PASSWORD: ${CROWDSEC_DB_ROOT_PASSWORD:-pareflux-mariadb-root-demo-only-password}
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  mariadb-data:
