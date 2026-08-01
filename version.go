@@ -16,4 +16,4 @@
 package pareflux_traefik_gate //nolint:revive,stylecheck
 
 // pluginVersion is updated automatically by the release workflow.
-var pluginVersion = "0.1.11" //nolint:gochecknoglobals
+var pluginVersion = "0.1.12" //nolint:gochecknoglobals

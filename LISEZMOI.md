@@ -51,6 +51,63 @@ un fichier secret en lecture seule et référence le middleware depuis les
 routeurs ou entrypoints protégés. Une panne de Gate ne doit jamais nécessiter
 un accès direct au socket Docker ni au réseau hôte.
 
+### Démarrage rapide avec Docker Compose
+
+L'exemple complet et exécutable se trouve dans
+[`examples/compose/docker-compose.yml`](examples/compose/docker-compose.yml).
+Il démarre CrowdSec avec AppSec, Traefik et un service Whoami protégé :
+
+```bash
+cd examples/compose
+docker compose up --detach --wait
+curl --header 'Host: pareflux.localhost' http://127.0.0.1:18080/
+```
+
+La première partie déclare le plugin public dans la configuration **statique**
+de démarrage de Traefik. Traefik télécharge cette version précise au démarrage :
+
+```yaml
+services:
+  traefik:
+    image: traefik:v3.7.9
+    command:
+      - --experimental.plugins.parefluxgate.modulename=github.com/vandman/pareflux-traefik-gate
+      - --experimental.plugins.parefluxgate.version=v0.1.12
+```
+
+La seconde partie crée un middleware **dynamique** et l'attache au routeur :
+
+```yaml
+services:
+  whoami:
+    labels:
+      traefik.http.routers.whoami.middlewares: pareflux-gate
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.enabled: "true"
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecMode: stream
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecLapiHost: crowdsec:8080
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecLapiKey: ${PAREFLUX_GATE_DEMO_KEY:-pareflux-compose-demo-only-key}
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecAppsecEnabled: "true"
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecAppsecHost: crowdsec:7422
+```
+
+La clef par défaut est volontairement jetable et convient uniquement à cet
+exemple exposé sur la boucle locale. En production, créez une clef d'API de
+remédiation CrowdSec dédiée, montez-la en lecture seule dans Traefik et utilisez
+`crowdsecLapiKeyFile` au lieu d'inscrire le secret dans des labels ou variables
+d'environnement. Un proxy de socket Docker est également préférable au montage
+direct du socket Docker.
+
+Traefik charge les plugins uniquement au démarrage. Redémarrez Traefik après
+avoir changé la version du plugin, puis supprimez l'exemple avec :
+
+```bash
+docker compose down --volumes
+```
+
+Ce fichier README sert aussi de description dans le catalogue de plugins
+Traefik : l'exemple d'installation et l'explication opérationnelle seront donc
+visibles dans le catalogue comme sur GitHub.
+
 ### Architecture
 
 ```mermaid

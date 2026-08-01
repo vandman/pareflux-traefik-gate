@@ -1,0 +1,17 @@
+###############################################################################
+# PareFlux Gate example AppSec acquisition
+# FR: Active le listener AppSec CrowdSec sur le réseau interne de la pile de
+#     démonstration afin que PareFlux puisse lui soumettre les requêtes HTTP.
+# EN: Enables the CrowdSec AppSec listener on the example stack's internal
+#     network so PareFlux can submit HTTP requests to it.
+# Called by: CrowdSec example container
+# Calls: CrowdSec AppSec engine
+###############################################################################
+source: appsec
+listen_addr: 0.0.0.0:7422
+path: /
+appsec_configs:
+  - crowdsecurity/appsec-default
+  - crowdsecurity/crs
+labels:
+  type: appsec

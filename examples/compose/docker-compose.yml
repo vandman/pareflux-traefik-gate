@@ -1,0 +1,91 @@
+###############################################################################
+# PareFlux Gate public plugin example
+# FR: Démarre Traefik, CrowdSec et un service Whoami afin de montrer comment
+#     déclarer le plugin public puis l'attacher à un routeur Docker.
+# EN: Starts Traefik, CrowdSec, and a Whoami service to show how to register the
+#     public plugin and then attach it to a Docker router.
+# Called by: users following README.md or LISEZMOI.md
+# Calls: Traefik, CrowdSec, and traefik/whoami containers
+###############################################################################
+name: pareflux-gate-example
+
+services:
+  crowdsec:
+    image: crowdsecurity/crowdsec:v1.7.8
+    environment:
+      BOUNCER_KEY_pareflux: ${PAREFLUX_GATE_DEMO_KEY:-pareflux-compose-demo-only-key}
+      COLLECTIONS: >-
+        crowdsecurity/traefik
+        crowdsecurity/appsec-virtual-patching
+        crowdsecurity/appsec-crs
+        crowdsecurity/appsec-generic-rules
+    volumes:
+      - crowdsec-data:/var/lib/crowdsec/data
+      - crowdsec-config:/etc/crowdsec
+      - ./appsec.yaml:/etc/crowdsec/acquis.d/appsec.yaml:ro
+    healthcheck:
+      test: ["CMD", "cscli", "lapi", "status"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+    security_opt:
+      - no-new-privileges:true
+
+  traefik:
+    image: traefik:v3.7.9
+    command:
+      - --api.dashboard=false
+      - --ping=true
+      - --entrypoints.web.address=:80
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --experimental.plugins.parefluxgate.modulename=github.com/vandman/pareflux-traefik-gate
+      - --experimental.plugins.parefluxgate.version=v0.1.12
+    ports:
+      - 127.0.0.1:18080:80
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test:
+        - CMD
+        - traefik
+        - healthcheck
+        - --ping
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      crowdsec:
+        condition: service_healthy
+
+  whoami:
+    image: traefik/whoami:v1.11.0
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.whoami.entrypoints: web
+      traefik.http.routers.whoami.rule: Host(`pareflux.localhost`)
+      traefik.http.routers.whoami.middlewares: pareflux-gate
+      traefik.http.services.whoami.loadbalancer.server.port: "80"
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.enabled: "true"
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.logLevel: INFO
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecMode: stream
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecLapiScheme: http
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecLapiHost: crowdsec:8080
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecLapiPath: /
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecLapiKey: ${PAREFLUX_GATE_DEMO_KEY:-pareflux-compose-demo-only-key}
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.updateIntervalSeconds: "1"
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.remediationHeadersCustomName: X-Pareflux-Remediation
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecAppsecEnabled: "true"
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecAppsecScheme: http
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecAppsecHost: crowdsec:7422
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecAppsecPath: /
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecAppsecFailureBlock: "true"
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecAppsecUnreachableBlock: "true"
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  crowdsec-data:
+  crowdsec-config:

@@ -50,6 +50,62 @@ read-only secret file, and references the middleware from protected routers or
 entrypoints. A Gate failure must never require direct access to the Docker
 socket or the host network.
 
+### Quick start with Docker Compose
+
+The complete runnable example is in
+[`examples/compose/docker-compose.yml`](examples/compose/docker-compose.yml).
+It starts CrowdSec with AppSec, Traefik, and a protected Whoami service:
+
+```bash
+cd examples/compose
+docker compose up --detach --wait
+curl --header 'Host: pareflux.localhost' http://127.0.0.1:18080/
+```
+
+The first part registers the public plugin in Traefik's **static** startup
+configuration. Traefik downloads this exact release when it starts:
+
+```yaml
+services:
+  traefik:
+    image: traefik:v3.7.9
+    command:
+      - --experimental.plugins.parefluxgate.modulename=github.com/vandman/pareflux-traefik-gate
+      - --experimental.plugins.parefluxgate.version=v0.1.12
+```
+
+The second part creates a **dynamic** middleware and attaches it to the router:
+
+```yaml
+services:
+  whoami:
+    labels:
+      traefik.http.routers.whoami.middlewares: pareflux-gate
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.enabled: "true"
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecMode: stream
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecLapiHost: crowdsec:8080
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecLapiKey: ${PAREFLUX_GATE_DEMO_KEY:-pareflux-compose-demo-only-key}
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecAppsecEnabled: "true"
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecAppsecHost: crowdsec:7422
+```
+
+The default key is deliberately disposable and is only suitable for this
+loopback-only example. In production, create a dedicated CrowdSec remediation
+API key, mount it read-only in Traefik, and set `crowdsecLapiKeyFile` instead of
+putting the secret in labels or environment variables. A Docker socket proxy
+is also preferable to mounting the Docker socket directly.
+
+Traefik loads plugins only at startup. Restart Traefik after changing the
+plugin version, then remove the example with:
+
+```bash
+docker compose down --volumes
+```
+
+This README is also the description displayed by the Traefik Plugin Catalog,
+so the installation example and the operational explanation are available in
+the catalog as well as on GitHub.
+
 ### Architecture
 
 ```mermaid
