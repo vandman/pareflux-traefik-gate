@@ -223,7 +223,7 @@ documentation complète et de premier niveau en français. Une version anglaise
 complète est maintenue en parallèle, car l'anglais est la langue internationale
 de fait pour la collaboration technique et l'écosystème Traefik.
 
-Le [dépôt GitLab](https://github.com/vandman/pareflux-traefik-gate)
+Le [dépôt GitLab](https://gitlab.nikolov.fr/application/pareflux-traefik-gate)
 est le dépôt de développement principal et contient les commits intermédiaires
 et les versions de développement. Le [dépôt GitHub](https://github.com/vandman/pareflux-traefik-gate)
 est le canal public de distribution et de contribution, car le catalogue de

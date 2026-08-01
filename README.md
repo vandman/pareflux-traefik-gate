@@ -221,7 +221,7 @@ documentation in French. A complete English version is maintained in parallel
 because English is the de facto international language for technical
 collaboration and the Traefik ecosystem.
 
-The [GitLab repository](https://github.com/vandman/pareflux-traefik-gate)
+The [GitLab repository](https://gitlab.nikolov.fr/application/pareflux-traefik-gate)
 is the primary development repository and contains intermediate commits and
 development releases. The [GitHub repository](https://github.com/vandman/pareflux-traefik-gate)
 is the public distribution and contribution channel because the Traefik Plugin
