@@ -1,0 +1,62 @@
+###############################################################################
+# PareFlux Gate support question form
+# FR: Recueille un contexte minimal pour les questions publiques sans les
+#     confondre avec un defaut ou un signalement de vulnerabilite.
+# EN: Collects minimal context for public questions without confusing them
+#     with a defect or vulnerability report.
+# Called by: GitHub new issue page
+# Calls: GitHub Issues and PareFlux maintainers
+###############################################################################
+
+---
+# yamllint disable rule:line-length
+
+name: Configuration question
+description: Ask for help with a documented, non-sensitive configuration
+title: "[Question]: "
+labels:
+  - question
+  - "status: triage"
+body:
+  - type: input
+    id: pareflux-version
+    attributes:
+      label: PareFlux Gate version
+      placeholder: v0.1.8
+    validations:
+      required: true
+
+  - type: input
+    id: traefik-version
+    attributes:
+      label: Traefik version
+      placeholder: v3.x.y
+    validations:
+      required: true
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to achieve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What have you already tried?
+      description: Link the relevant documentation and include only sanitized configuration.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Submission checks
+      options:
+        - label: I checked the README and existing issues first.
+          required: true
+        - label: This question contains no credentials, secrets, private addresses, or identifying data.
+          required: true
+        - label: This is not a vulnerability report.
+          required: true

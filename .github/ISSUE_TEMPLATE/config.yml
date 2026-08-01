@@ -1,0 +1,21 @@
+###############################################################################
+# GitHub issue intake configuration
+# FR: Imposes les formulaires structures et dirige les vulnerabilites vers un
+#     canal prive afin d'eviter leur divulgation dans une issue publique.
+# EN: Enforces structured forms and directs vulnerabilities to a private
+#     channel so they are not disclosed in a public issue.
+# Called by: GitHub new issue page
+# Calls: GitHub private vulnerability reporting and project documentation
+###############################################################################
+
+---
+# yamllint disable rule:line-length
+
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/vandman/pareflux-traefik-gate/security/advisories/new
+    about: Do not disclose vulnerabilities, exploits, credentials, or secrets in a public issue.
+  - name: Read the documentation
+    url: https://github.com/vandman/pareflux-traefik-gate#readme
+    about: Check the configuration and troubleshooting documentation before opening an issue.

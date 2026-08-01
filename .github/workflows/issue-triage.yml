@@ -1,0 +1,72 @@
+###############################################################################
+# GitHub issue triage
+# FR: Classe chaque nouvelle demande et explique automatiquement les attentes
+#     lorsqu'un mainteneur demande des informations complementaires.
+# EN: Classifies each new request and automatically explains expectations when
+#     a maintainer requests additional information.
+# Called by: GitHub issue opened, reopened, and labeled events
+# Calls: actions/github-script and GitHub Issues API
+###############################################################################
+
+---
+# yamllint disable rule:line-length
+
+name: Triage public issue
+
+"on":
+  issues:
+    types:
+      - opened
+      - reopened
+      - labeled
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Apply triage state or request details
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const action = context.payload.action;
+            const label = context.payload.label?.name;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = issue.number;
+
+            if (action === "opened" || action === "reopened") {
+              const labels = issue.labels.map((item) =>
+                typeof item === "string" ? item : item.name
+              );
+              const hasStatus = labels.some((name) => name?.startsWith("status: "));
+              if (!hasStatus) {
+                await github.rest.issues.addLabels({
+                  owner,
+                  repo,
+                  issue_number,
+                  labels: ["status: triage"],
+                });
+              }
+            }
+
+            if (action === "labeled" && label === "status: needs-info") {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body: [
+                  "More information is needed before this report can be evaluated.",
+                  "Please edit the issue with the requested versions, minimal reproduction, sanitized configuration, and relevant sanitized logs.",
+                  "Do not post credentials, tokens, cookies, private addresses, personal data, or vulnerability details publicly.",
+                  "",
+                  "Des informations complementaires sont necessaires avant l'evaluation.",
+                  "Modifiez l'issue avec les versions, la reproduction minimale, la configuration expurgee et les journaux expurges demandes.",
+                ].join("\n\n"),
+              });
+            }

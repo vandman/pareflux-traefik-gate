@@ -1,0 +1,67 @@
+###############################################################################
+# PareFlux Gate feature request form
+# FR: Structure les propositions autour du besoin, des alternatives et de
+#     l'impact securite afin de permettre une qualification avant GitLab.
+# EN: Structures proposals around the need, alternatives, and security impact
+#     so they can be qualified before GitLab integration.
+# Called by: GitHub new issue page
+# Calls: GitHub Issues and PareFlux maintainers
+###############################################################################
+
+---
+# yamllint disable rule:line-length
+
+name: Feature request
+description: Propose a new capability or behavior
+title: "[Feature]: "
+labels:
+  - enhancement
+  - "status: triage"
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: Use case
+      description: Describe the operational or security problem, not only the desired implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Explain inputs, outputs, defaults, and failure behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include existing Traefik or CrowdSec mechanisms where relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and compatibility impact
+      description: Consider trusted proxies, fail-open or fail-closed behavior, cache state, upgrades, and backward compatibility.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add sanitized diagrams, examples, or public references if useful.
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Submission checks
+      options:
+        - label: I checked that an equivalent request is not already open.
+          required: true
+        - label: This request contains no credentials, secrets, private addresses, or identifying data.
+          required: true
