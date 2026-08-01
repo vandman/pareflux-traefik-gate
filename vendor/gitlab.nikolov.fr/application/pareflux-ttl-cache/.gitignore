@@ -1,0 +1,13 @@
+###############################################################################
+# Local and generated files
+# FR: Exclut les artefacts locaux, binaires et rapports qui ne doivent pas
+#     entrer dans le dépôt public.
+# EN: Excludes local assets, binaries, and reports that must not enter the
+#     public repository.
+# Called by: Git
+# Calls: none
+###############################################################################
+.local/
+bin/
+coverage.out
+*.prof

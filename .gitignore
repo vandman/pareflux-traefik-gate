@@ -1,0 +1,10 @@
+###############################################################################
+# Local and generated files
+# FR: Exclut les fichiers de travail et les rapports générés.
+# EN: Excludes local working files and generated reports.
+# Called by: Git
+# Calls: none
+###############################################################################
+.local/
+coverage.out
+*.prof

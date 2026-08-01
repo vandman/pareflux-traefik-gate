@@ -1,0 +1,10 @@
+###############################################################################
+# PareFlux Gate integration Traefik image
+# FR: Embarque le plugin local pour un test DinD reproductible.
+# EN: Embeds the local plugin for a reproducible DinD integration test.
+# Called by: test/docker-compose.yml
+# Calls: Traefik local plugin loader
+###############################################################################
+FROM traefik:v3.7.9
+
+COPY . /plugins-local/src/github.com/vandman/pareflux-traefik-gate

@@ -1,0 +1,40 @@
+###############################################################################
+# PareFlux Gate public contribution verification
+# FR: Vérifie sans secret les propositions publiques GitHub contre les sources
+#     vendored publiées, sans accès au dépôt de développement GitLab.
+# EN: Verifies public GitHub contributions without secrets against published
+#     vendored sources and without access to the GitLab development repository.
+# Called by: GitHub pull_request and push events
+# Calls: actions/checkout, actions/setup-go and Go verification tools
+###############################################################################
+
+name: Verify public contribution
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Verify formatting, code and licenses
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet -mod=vendor ./...
+          go test -mod=vendor -race ./...
+          ./scripts/check-licenses.sh

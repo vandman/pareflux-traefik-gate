@@ -1,0 +1,18 @@
+PareFlux Traefik Gate
+Copyright 2026 Pierre Nikolov
+
+This product includes modified source derived from:
+Crowdsec Bouncer Traefik Plugin
+Copyright Maxime Le Roux
+https://github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin
+
+Both the upstream work and this derivative are licensed under the Apache
+License, Version 2.0.
+
+This product also includes modified source derived from:
+simpleredis v1.0.12
+Copyright Max Lerebourg and Mathieu Hanotaux
+https://github.com/maxlerebourg/simpleredis
+
+The upstream work and this derivative are licensed under the Apache License,
+Version 2.0.

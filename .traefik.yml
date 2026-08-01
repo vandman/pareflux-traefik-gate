@@ -1,0 +1,20 @@
+###############################################################################
+# Traefik plugin manifest
+# FR: Déclare PareFlux Gate comme middleware local Traefik et fournit une
+#     configuration de test sans secret réel.
+# EN: Declares PareFlux Gate as a local Traefik middleware and provides a test
+#     configuration without a real secret.
+# Called by: Traefik plugin loader
+# Calls: PareFlux Gate
+###############################################################################
+displayName: PareFlux Gate
+type: middleware
+iconPath: .assets/icon.png
+
+import: github.com/vandman/pareflux-traefik-gate
+
+summary: CrowdSec decisions and AppSec protection for Traefik
+
+testData:
+  Enabled: false
+  CrowdsecLapiKey: test-only-placeholder

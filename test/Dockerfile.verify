@@ -1,0 +1,28 @@
+###############################################################################
+# PareFlux Gate verification image
+# FR: Exécute les contrôles Go, la régénération reproductible du vendor et le
+#     contrôle des licences dans un environnement indépendant du runner CI.
+# EN: Runs Go checks, reproducible vendor regeneration, and license validation
+#     in an environment independent from the active CI runner.
+# Called by: GitLab verify job and public publication fallback
+# Calls: Go toolchain, diff and scripts/check-licenses.sh
+###############################################################################
+
+FROM golang:1.26.5-bookworm
+
+WORKDIR /src
+COPY . .
+
+RUN set -eux; \
+    baseline="$(mktemp -d)"; \
+    cp go.mod go.sum "$baseline/"; \
+    cp -a vendor "$baseline/vendor"; \
+    test -z "$(gofmt -l .)"; \
+    go vet ./...; \
+    go test -race ./...; \
+    go mod tidy; \
+    go mod vendor; \
+    diff -ru "$baseline/go.mod" go.mod; \
+    diff -ru "$baseline/go.sum" go.sum; \
+    diff -ru "$baseline/vendor" vendor; \
+    ./scripts/check-licenses.sh

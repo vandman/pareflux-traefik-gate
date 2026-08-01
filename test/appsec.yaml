@@ -1,0 +1,15 @@
+###############################################################################
+# PareFlux Gate AppSec test acquisition
+# FR: Expose AppSec uniquement dans la pile jetable d'intégration.
+# EN: Exposes AppSec only inside the disposable integration stack.
+# Called by: CrowdSec test container
+# Calls: CrowdSec AppSec engine
+###############################################################################
+source: appsec
+listen_addr: 0.0.0.0:7422
+path: /
+appsec_configs:
+  - crowdsecurity/appsec-default
+  - crowdsecurity/crs
+labels:
+  type: appsec

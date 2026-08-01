@@ -1,0 +1,21 @@
+###############################################################################
+# PareFlux TTL Cache CI
+# FR: Vérifie le formatage, les tests concurrents et l'absence de dépendance
+#     d'exécution avant publication.
+# EN: Verifies formatting, concurrent tests, and the absence of runtime
+#     dependencies before publication.
+# Called by: GitLab CI
+# Calls: gofmt, go vet, go test, go list
+###############################################################################
+image: golang:1.26
+
+stages:
+  - verify
+
+verify:
+  stage: verify
+  script:
+    - test -z "$(gofmt -l .)"
+    - go vet ./...
+    - go test -race ./...
+    - test "$(go list -m all | wc -l)" -eq 1

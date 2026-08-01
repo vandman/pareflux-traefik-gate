@@ -1,0 +1,10 @@
+###############################################################################
+# Vendored whitespace policy
+# FR: Ignore uniquement les particularités d'espacement provenant des sources
+#     tierces vendored, qui doivent rester identiques aux modules publiés.
+# EN: Ignores only whitespace peculiarities from vendored third-party source,
+#     which must remain identical to published modules.
+# Called by: Git
+# Calls: none
+###############################################################################
+vendor/** -whitespace
