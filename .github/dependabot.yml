@@ -1,0 +1,26 @@
+###############################################################################
+# GitHub Actions dependency updates
+# FR: Propose les mises a jour des Actions du miroir public sans tenter de
+#     modifier les modules Go geres dans le depot GitLab principal.
+# EN: Proposes public mirror Action updates without trying to modify Go modules
+#     managed in the primary GitLab repository.
+# Called by: GitHub Dependabot
+# Calls: GitHub pull requests and Actions release metadata
+###############################################################################
+
+---
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Asia/Seoul
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - "status: triage"
+    commit-message:
+      prefix: deps
