@@ -4,7 +4,7 @@
 #     alertes, décisions et clefs de remédiation dans PostgreSQL.
 # EN: Configures the example CrowdSec LAPI to persist its machines, alerts,
 #     decisions, and remediation keys in PostgreSQL.
-# Called by: CrowdSec container with docker-compose.postgresql.yml
+# Called by: CrowdSec container with compose.override.postgresql.yml
 # Calls: PostgreSQL service on the internal Compose network
 ###############################################################################
 db_config:

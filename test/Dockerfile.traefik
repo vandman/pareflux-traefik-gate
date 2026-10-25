@@ -5,6 +5,6 @@
 # Called by: test/docker-compose.yml
 # Calls: Traefik local plugin loader
 ###############################################################################
-FROM traefik:v3.7.9
+FROM traefik:v3.7.16
 
 COPY . /plugins-local/src/github.com/vandman/pareflux-traefik-gate

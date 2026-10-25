@@ -1,5 +1,5 @@
 ###############################################################################
-# PareFlux Gate MariaDB example extension
+# PareFlux Gate MariaDB Compose override
 # FR: Remplace le stockage SQLite de CrowdSec LAPI par MariaDB tout en
 #     conservant le même plugin PareFlux et le même middleware Traefik.
 # EN: Replaces CrowdSec LAPI SQLite storage with MariaDB while keeping the same

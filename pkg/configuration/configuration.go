@@ -58,6 +58,10 @@ const (
 
 // Config the plugin configuration.
 type Config struct {
+	DashboardHealthURL                         string   `json:"dashboardHealthURL,omitempty"`
+	DashboardIntegration                       bool     `json:"dashboardIntegration,omitempty"`
+	DashboardLinkURL                           string   `json:"dashboardLinkURL,omitempty"`
+	DashboardHost                              string   `json:"dashboardHost,omitempty"`
 	Enabled                                    bool     `json:"enabled,omitempty"`
 	LogLevel                                   string   `json:"logLevel,omitempty"`
 	LogFormat                                  string   `json:"logFormat,omitempty"`
@@ -79,6 +83,8 @@ type Config struct {
 	CrowdsecAppsecFailureBlock                 bool     `json:"crowdsecAppsecFailureBlock,omitempty"`
 	CrowdsecAppsecUnreachableBlock             bool     `json:"crowdsecAppsecUnreachableBlock,omitempty"`
 	CrowdsecAppsecBodyLimit                    int64    `json:"crowdsecAppsecBodyLimit,omitempty"`
+	CrowdsecAppsecBodyExcludedContentTypes     []string `json:"crowdsecAppsecBodyExcludedContentTypes,omitempty"`
+	CrowdsecAppsecTimeoutSeconds               int64    `json:"crowdsecAppsecTimeoutSeconds,omitempty"`
 	CrowdsecLapiScheme                         string   `json:"crowdsecLapiScheme,omitempty"`
 	CrowdsecLapiHost                           string   `json:"crowdsecLapiHost,omitempty"`
 	CrowdsecLapiPath                           string   `json:"crowdsecLapiPath,omitempty"`
@@ -140,15 +146,22 @@ func contains(source []string, target string) bool {
 // New creates the default plugin configuration.
 func New() *Config {
 	return &Config{
-		Enabled:                         false,
-		LogLevel:                        LogINFO,
-		LogFormat:                       "common",
-		LogFilePath:                     "",
-		CrowdsecMode:                    LiveMode,
-		CrowdsecAppsecEnabled:           false,
-		CrowdsecAppsecFailureBlock:      true,
-		CrowdsecAppsecUnreachableBlock:  true,
-		CrowdsecAppsecBodyLimit:         10485760,
+		Enabled:                        false,
+		LogLevel:                       LogINFO,
+		LogFormat:                      "common",
+		LogFilePath:                    "",
+		CrowdsecMode:                   LiveMode,
+		CrowdsecAppsecEnabled:          false,
+		CrowdsecAppsecFailureBlock:     true,
+		CrowdsecAppsecUnreachableBlock: true,
+		CrowdsecAppsecBodyLimit:        1048576,
+		CrowdsecAppsecBodyExcludedContentTypes: []string{
+			"application/octet-stream",
+			"image/",
+			"audio/",
+			"video/",
+		},
+		CrowdsecAppsecTimeoutSeconds:    3,
 		CrowdsecAppsecScheme:            "",
 		CrowdsecAppsecHost:              "crowdsec:7422",
 		CrowdsecAppsecPath:              "/",
@@ -449,6 +462,9 @@ func validateParamsRequired(config *Config) error {
 	}
 	if config.CrowdsecAppsecBodyLimit < 0 {
 		return errors.New("CrowdsecAppsecBodyLimit: cannot be less than 0")
+	}
+	if config.CrowdsecAppsecTimeoutSeconds < 0 {
+		return errors.New("CrowdsecAppsecTimeoutSeconds: cannot be less than 0")
 	}
 	if config.RemediationStatusCode < 100 || config.RemediationStatusCode >= 600 {
 		return errors.New("RemediationStatusCode: cannot be less than 100 and more than 600")

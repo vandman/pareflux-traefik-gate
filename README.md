@@ -1,112 +1,251 @@
-# PareFlux Traefik Gate
+# PareFlux Gate
 
-Documentation: **English** | [Français](LISEZMOI.md)
+**CrowdSec IP decisions and AppSec HTTP inspection inside Traefik.**
 
-PareFlux Gate is an Apache-2.0 Traefik HTTP middleware for CrowdSec decisions,
-CrowdSec AppSec, and fast in-process decision caching.
+**English** · [Français](https://github.com/vandman/pareflux-traefik-gate/blob/main/LISEZMOI.md) · [Traefik catalog](https://plugins.traefik.io/plugins/6a6da8539dbe8a37899c23c8/pare-flux-gate)
 
-It is derived from
-`maxlerebourg/crowdsec-bouncer-traefik-plugin` v1.6.0 without importing its Git
-history or GPL-3.0 TTL cache dependency. Provenance is recorded in
-`UPSTREAM.md`.
+PareFlux Gate rejects requests covered by a CrowdSec decision and can inspect
+other requests with AppSec to detect HTTP attacks. It runs inside Traefik,
+using an in-memory or Redis decision cache. It opens no additional listening
+port. The PareFlux Control console is optional.
 
-## Decision flow
+## Contents
 
-1. Resolve the network peer or an explicitly trusted forwarded identity.
-2. Read the ephemeral PareFlux TTL cache.
-3. Query or stream decisions from CrowdSec LAPI.
-4. Submit eligible HTTP requests to CrowdSec AppSec.
-5. Return the configured remediation or forward to the next handler.
+- [Features](#features)
+- [Choose a mode](#choose-a-mode)
+- [Installation](#installation)
+- [Verify protection](#verify-protection)
+- [Settings and failure policies](#settings-and-failure-policies)
+- [Troubleshooting](#troubleshooting)
+- [Architecture](#architecture)
 
-Persistent decisions remain owned by CrowdSec LAPI. The local cache is emptied
-when Traefik restarts.
+## Features
 
-The stream cache fails closed for addresses without a cached decision when LAPI
-is temporarily unreachable. Set `crowdsecStreamUnreachableBlock: false` only
-when an explicit availability-first policy is required. Existing cached bans
-remain enforced in both modes.
+| Need | What Gate does |
+| --- | --- |
+| Enforce CrowdSec decisions | Bans and captcha remediations from LAPI, or community decisions in `alone` mode |
+| Stop HTTP attacks | CrowdSec AppSec inspection, enabled separately from IP decisions |
+| Reduce LAPI requests | `stream` and `live` modes, local TTL or Redis caching |
+| Identify visitors behind a proxy | Forwarded identity accepted only from an explicitly trusted proxy |
+| Customize rejections | Configurable HTTP status, ban HTML, captcha provider and template |
+| Diagnose blocking | Logs and an optional remediation marker in responses and internal request headers |
 
-Gate uses the network peer address by default. It consults
-`X-Forwarded-For` only when the immediate peer belongs to
-`forwardedHeadersTrustedIps`; malformed forwarded chains are rejected.
+CrowdSec analyzes logs and produces decisions. Gate enforces them; it does not
+install scenarios or replace the CrowdSec engine. Persistent decisions stay in
+LAPI; restarting Traefik clears the local cache. Community feed access depends
+on CrowdSec registration and entitlements.
 
-`remediationHeadersCustomName` is written to both the rejection response and
-the internally sanitized request headers. Keeping this header in the Traefik
-access log lets CrowdSec discard rejections produced by PareFlux itself instead
-of feeding them back into HTTP probing scenarios.
+## Choose a mode
 
-AppSec still checks request metadata for gRPC and WebSocket traffic, but does
-not preload their streaming bodies.
+| Mode | Decision source | Cache | When to use it |
+| --- | --- | --- | --- |
+| `stream` | CrowdSec LAPI, refreshed every 60 seconds by default | Local or Redis | Recommended starting point for LAPI decisions with low per-request overhead |
+| `live` | LAPI on cache misses | Local or Redis; results cached for up to 60 seconds by default | Query individual IPs as they arrive |
+| `none` | LAPI on every request | No IP decision lookup cache | Require a fresh LAPI answer for every request; this does **not** disable protection |
+| `appsec` | CrowdSec AppSec only | No IP decision lookup | Use HTTP inspection when another component already enforces IP decisions; set `crowdsecAppsecEnabled: true` |
+| `alone` | CrowdSec Central API, every two hours | Local or Redis | Consume the community feed with valid CAPI credentials; does not include your local LAPI decisions |
 
-## Integration with Traefik
+AppSec can complement IP decision modes by setting
+`crowdsecAppsecEnabled: true`. The default mode is `live`; the example below
+explicitly selects `stream`.
 
-Gate is a Traefik local plugin, not a reverse proxy or sidecar. Traefik loads
-the Go source through Yaegi and invokes the middleware inside its own HTTP
-request pipeline. The plugin therefore shares Traefik's process and request
-objects but opens its own internal HTTP connections to CrowdSec LAPI and AppSec.
+## Installation
 
-The project installs the plugin source read-only, mounts its LAPI key as a
-read-only secret file, and references the middleware from protected routers or
-entrypoints. A Gate failure must never require direct access to the Docker
-socket or the host network.
+The public example pins **v0.1.14**. Static configuration loads the plugin at
+startup; dynamic configuration enables it and attaches it to protected routes.
+Registering the plugin alone does not protect any route.
 
-### Quick start with Docker Compose
+### 1. Prepare CrowdSec
 
-The complete runnable example is in
-[`examples/compose/docker-compose.yml`](examples/compose/docker-compose.yml).
-It starts CrowdSec with AppSec, Traefik, and a protected Whoami service:
+Provide a LAPI endpoint reachable from Traefik and a dedicated bouncer API key,
+created with `cscli bouncers add pareflux-traefik`. Mount that key read-only
+**inside the Traefik container** at `/run/secrets/crowdsec-bouncer.key`.
+The user running Traefik must be able to read it.
+
+For AppSec, CrowdSec also needs an AppSec component listening on `:7422`, its
+acquisitions and rules. Otherwise start with `crowdsecAppsecEnabled: false`.
+Behavior detection from logs additionally requires a separate Traefik log
+acquisition in CrowdSec.
+
+### 2. Register the plugin in Traefik
+
+In the **static** `traefik.yml` file:
+
+```yaml
+experimental:
+  plugins:
+    parefluxgate:
+      moduleName: github.com/vandman/pareflux-traefik-gate
+      version: v0.1.14
+```
+
+Restart Traefik after changing the plugin version. Use the existing file
+provider, or register the dynamic file below:
+
+```yaml
+providers:
+  file:
+    filename: /etc/traefik/dynamic/pareflux.yml
+```
+
+### 3. Create and attach the middleware
+
+In `/etc/traefik/dynamic/pareflux.yml`, replacing the domain, service and
+CrowdSec addresses with your installation values:
+
+```yaml
+http:
+  routers:
+    app:
+      rule: Host(`app.example.com`)
+      entryPoints: [websecure]
+      tls: {}
+      service: app
+      middlewares: [pareflux-gate]
+  services:
+    app:
+      loadBalancer:
+        servers:
+          - url: http://app:80
+  middlewares:
+    pareflux-gate:
+      plugin:
+        parefluxgate:
+          enabled: true
+          crowdsecMode: stream
+          crowdsecLapiHost: crowdsec:8080
+          crowdsecLapiKeyFile: /run/secrets/crowdsec-bouncer.key
+          crowdsecAppsecEnabled: true
+          crowdsecAppsecHost: crowdsec:7422
+          remediationHeadersCustomName: X-Pareflux-Remediation
+```
+
+This example assumes an existing `websecure` entrypoint and certificates managed
+by your usual Traefik TLS configuration. Keep existing SSO and other security
+middlewares. A Docker router references this file-defined middleware as
+`pareflux-gate@file`.
+
+### Alternative: Docker labels
+
+When both router and middleware are defined by the Docker provider, use this
+alternative **instead of** the file-defined middleware:
+
+```yaml
+services:
+  app:
+    labels:
+      traefik.http.routers.app.middlewares: pareflux-gate
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.enabled: "true"
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecMode: stream
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecLapiHost: crowdsec:8080
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecLapiKeyFile: /run/secrets/crowdsec-bouncer.key
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecAppsecEnabled: "true"
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecAppsecHost: crowdsec:7422
+```
+
+Add the usual router, entrypoint and service labels. The key remains a file
+mounted in Traefik, never a secret in labels. Attach the same middleware to
+other application routers to protect them too.
+
+### Complete demonstration
+
+The [Compose example](https://github.com/vandman/pareflux-traefik-gate/tree/main/examples/compose)
+includes Traefik, CrowdSec, AppSec and Whoami. After obtaining the repository:
 
 ```bash
 cd examples/compose
 docker compose up --detach --wait
 curl --header 'Host: pareflux.localhost' http://127.0.0.1:18080/
-```
-
-The first part registers the public plugin in Traefik's **static** startup
-configuration. Traefik downloads this exact release when it starts:
-
-```yaml
-services:
-  traefik:
-    image: traefik:v3.7.9
-    command:
-      - --experimental.plugins.parefluxgate.modulename=github.com/vandman/pareflux-traefik-gate
-      - --experimental.plugins.parefluxgate.version=v0.1.13
-```
-
-The second part creates a **dynamic** middleware and attaches it to the router:
-
-```yaml
-services:
-  whoami:
-    labels:
-      traefik.http.routers.whoami.middlewares: pareflux-gate
-      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.enabled: "true"
-      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecMode: stream
-      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecLapiHost: crowdsec:8080
-      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecLapiKey: ${PAREFLUX_GATE_DEMO_KEY:-pareflux-compose-demo-only-key}
-      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecAppsecEnabled: "true"
-      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecAppsecHost: crowdsec:7422
-```
-
-The default key is deliberately disposable and is only suitable for this
-loopback-only example. In production, create a dedicated CrowdSec remediation
-API key, mount it read-only in Traefik, and set `crowdsecLapiKeyFile` instead of
-putting the secret in labels or environment variables. A Docker socket proxy
-is also preferable to mounting the Docker socket directly.
-
-Traefik loads plugins only at startup. Restart Traefik after changing the
-plugin version, then remove the example with:
-
-```bash
+# Remove only this demonstration stack and its data:
 docker compose down --volumes
 ```
 
-This README is also the description displayed by the Traefik Plugin Catalog,
-so the installation example and the operational explanation are available in
-the catalog as well as on GitHub.
+The example listens on loopback only. Its embedded key is disposable and is
+not intended for production. Use a dedicated key in production and prefer a
+Docker socket proxy to mounting the socket directly.
 
-### Storage choices: local, Redis, PostgreSQL, or MariaDB
+## Verify protection
+
+1. Confirm that a normal request reaches the application.
+2. On a test installation, add a temporary decision for the IP **actually
+   resolved by Gate**, then repeat the request from that IP.
+3. Allow for the `stream` synchronization interval; verify rejection, remove
+   the decision, then confirm normal access again.
+
+```bash
+# On the TEST CrowdSec engine; this is a documentation-only IP:
+cscli decisions add --ip 192.0.2.123 --duration 2m --reason pareflux-test
+cscli decisions delete --ip 192.0.2.123
+```
+
+Replace `192.0.2.123` with the test client's IP. Do not ban the IP used to
+administer the installation. A successful IP decision test alone does not
+prove that log acquisition or AppSec rules work.
+
+## Settings and failure policies
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `enabled` | `false` | Explicitly enable the protection middleware |
+| `crowdsecMode` | `live` | Select decision source and update behavior |
+| `crowdsecLapiKeyFile` | Empty | Read the LAPI key from a mounted secret |
+| `updateIntervalSeconds` | `60` | LAPI stream refresh interval |
+| `defaultDecisionSeconds` | `60` | Maximum cached result lifetime in `live` mode |
+| `crowdsecAppsecEnabled` | `false` | Enable HTTP inspection |
+| `remediationStatusCode` | `403` | HTTP status returned for a ban |
+| `forwardedHeadersTrustedIps` | `[]` | Proxies allowed to supply the visitor's IP |
+| `clientTrustedIps` | `[]` | Clients bypassing **all** Gate checks |
+
+The [complete configuration reference](https://github.com/vandman/pareflux-traefik-gate/blob/main/docs/configuration.EN.md)
+covers types, defaults, secret files, TLS, Redis and captcha. Names match the
+PareFlux code: an option present in another CrowdSec fork is not necessarily
+available here.
+
+| Failure | Default policy | Setting |
+| --- | --- | --- |
+| LAPI/CAPI stream marked unhealthy | Block IPs missing from cache; cached bans remain enforced | `crowdsecStreamUnreachableBlock: true` |
+| AppSec unreachable | Block the request | `crowdsecAppsecUnreachableBlock: true` |
+| AppSec internal HTTP error | Block the request | `crowdsecAppsecFailureBlock: true` |
+| Redis unreachable when enabled | Block the request | `redisCacheUnreachableBlock: true` |
+
+Setting one of these options to `false` prioritizes availability for that
+specific failure. `live` and `none` also reject requests whose LAPI query fails.
+The `updateMaxFailure` counter controls stream health; it does not replace
+these failure policies.
+
+Trusted proxies and exempt clients serve different purposes:
+`forwardedHeadersTrustedIps` allows resolving the visitor IP, while
+`clientTrustedIps` bypasses protection for the resolved IP. Do not indiscriminately
+trust public networks. Cache and synchronization workers are shared within the
+Traefik process; separate middleware instances are not isolated CrowdSec engines.
+
+## Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| Requests are never filtered | `enabled: true`, middleware attached to the correct router and provider (`@file` / `@docker`) |
+| Wrong IP or all visitors blocked | Network peer, proxy chain and `forwardedHeadersTrustedIps`; do not trust arbitrary forwarded headers |
+| Rejections after a CrowdSec outage | Gate logs, LAPI/AppSec connectivity and the failure policies above |
+| LAPI `401` / `403` | Bouncer key, file readable inside Traefik and matching CrowdSec engine |
+| A ban is not immediately applied | Selected mode, stream delay or `live` cache, actual resolved IP |
+| LAPI works but AppSec rejects everything | `:7422` service, AppSec acquisitions and rules, key and AppSec logs |
+| Rejections appear as new attacks in logs | Retain the remediation marker in access logs and configure its exclusion in CrowdSec processing |
+
+## Architecture
+
+Diagrams and detailed explanations are in the separate
+[PareFlux Gate architecture](https://github.com/vandman/pareflux-traefik-gate/blob/main/docs/architecture.EN.md)
+document: components, network traffic, HTTP processing and failure decisions.
+
+## PareFlux console and Traefik dashboard
+
+The protection plugin works without PareFlux Control. The optional dashboard
+integration adds a PareFlux link, a “Connected / Protected” tile and private
+URL exchange with Control. See the [dedicated configuration](https://github.com/vandman/pareflux-traefik-gate/blob/main/docs/dashboard-menu.EN.md).
+URLs come from deployment configuration; standalone Control displays no ingress
+return link.
+
+## Storage choices: local, Redis, PostgreSQL, or MariaDB
 
 PostgreSQL and MariaDB are supported, but they are configured on CrowdSec LAPI,
 not on the PareFlux middleware. This separation keeps each storage role clear:
@@ -121,18 +260,22 @@ not on the PareFlux middleware. This separation keeps each storage role clear:
 Changing the CrowdSec database does not change the PareFlux labels: Gate still
 connects to `crowdsec:8080`, and CrowdSec owns the database connection.
 
+The commands below merge two Compose files. `docker-compose.yml` provides
+Traefik, Whoami, CrowdSec, and AppSec; the explicitly named `compose.override.*`
+file adds the selected database and configures CrowdSec to use it.
+
 Run the complete example with PostgreSQL:
 
 ```bash
 cd examples/compose
 docker compose \
   -f docker-compose.yml \
-  -f docker-compose.postgresql.yml \
+  -f compose.override.postgresql.yml \
   up --detach --wait
 curl --header 'Host: pareflux.localhost' http://127.0.0.1:18080/
 docker compose \
   -f docker-compose.yml \
-  -f docker-compose.postgresql.yml \
+  -f compose.override.postgresql.yml \
   down --volumes
 ```
 
@@ -142,12 +285,12 @@ Or run the same stack with MariaDB:
 cd examples/compose
 docker compose \
   -f docker-compose.yml \
-  -f docker-compose.mariadb.yml \
+  -f compose.override.mariadb.yml \
   up --detach --wait
 curl --header 'Host: pareflux.localhost' http://127.0.0.1:18080/
 docker compose \
   -f docker-compose.yml \
-  -f docker-compose.mariadb.yml \
+  -f compose.override.mariadb.yml \
   down --volumes
 ```
 
@@ -156,159 +299,6 @@ Use Docker secrets or another secret manager, TLS to an external database, and
 durable backups in production. Switching an existing CrowdSec installation to
 a new database does not migrate its existing machines, remediation keys,
 alerts, or decisions automatically.
-
-### Architecture
-
-```mermaid
-flowchart TB
-    client["HTTP client"]
-
-    subgraph process["Traefik process"]
-        entrypoint["Entrypoint and router"]
-
-        subgraph gate["PareFlux Gate middleware"]
-            identity["Source identity resolver"]
-            policy["Decision and failure policy"]
-            cache["PareFlux TTL Cache"]
-            appsecclient["AppSec client"]
-            marker["Remediation marker"]
-        end
-
-        service["Traefik service handler"]
-    end
-
-    lapi["CrowdSec LAPI<br/>decision stream"]
-    appsec["CrowdSec AppSec<br/>HTTP inspection"]
-    backend["Protected backend"]
-    accesslog["Traefik JSON access log"]
-
-    client --> entrypoint --> identity --> policy
-    policy <--> cache
-    policy <--> lapi
-    policy --> appsecclient <--> appsec
-    policy --> marker
-    policy --> service --> backend
-    entrypoint --> accesslog
-```
-
-### Network flow
-
-```mermaid
-flowchart LR
-    internet["Client network"]
-
-    subgraph traefikcontainer["Traefik container"]
-        tls["Traefik entrypoints<br/>:80, :443, optional :8448"]
-        gate["Gate runs in-process<br/>no listening port"]
-    end
-
-    subgraph front["Internal front network"]
-        lapi["CrowdSec LAPI :8080"]
-        appsec["CrowdSec AppSec :7422"]
-        backend["Application service port"]
-    end
-
-    secret["Read-only LAPI key file"]
-    log["Persisted access.log"]
-
-    internet --> tls --> gate
-    gate -->|"decision stream"| lapi
-    gate -->|"inspection request"| appsec
-    gate -->|"allowed request through Traefik"| backend
-    secret --> gate
-    tls --> log
-```
-
-The client never connects to Gate, LAPI, or AppSec directly. The only public
-listener is a Traefik entrypoint. The trusted forwarded-header ranges determine
-when Gate may derive a client identity from a proxy header instead of the
-network peer.
-
-### Application flow
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant T as Traefik router
-    participant G as PareFlux Gate
-    participant K as TTL cache
-    participant L as CrowdSec LAPI
-    participant W as CrowdSec AppSec
-    participant A as Application
-
-    L-->>G: Periodic decision stream update
-    G->>K: Insert or delete expiring decisions
-    C->>T: HTTP request
-    T->>G: Middleware invocation
-    G->>G: Resolve trusted client identity
-    G->>K: Look up decision
-    alt Cached ban or captcha
-        K-->>G: Remediation
-        G-->>C: Configured status and remediation marker
-    else No cached remediation
-        G->>W: Method, URI, host, headers, IP, eligible body
-        alt AppSec rejects
-            W-->>G: Blocking status
-            G-->>C: Configured status and remediation marker
-        else AppSec allows or configured fail-open applies
-            W-->>G: Allow
-            G->>A: Invoke next Traefik handler
-            A-->>C: Application response
-        end
-    end
-```
-
-### Ban decision flow
-
-```mermaid
-flowchart TD
-    request["Traefik invokes Gate"]
-    enabled{"Gate enabled?"}
-    identity["Resolve network peer or trusted forwarded identity"]
-    identityok{"Identity valid?"}
-    trusted{"Client IP explicitly trusted?"}
-    mode{"Decision mode uses CrowdSec?"}
-    lookup["Look up IP in TTL or Redis cache"]
-    cached{"Cached value?"}
-    remediation["Return ban or captcha remediation<br/>and internal marker"]
-    stream{"Stream mode healthy?"}
-    closed{"Explicit stream fail-closed enabled?"}
-    technical["Return technical rejection"]
-    appsec{"AppSec enabled?"}
-    inspect["Send request metadata and eligible body to AppSec"]
-    wafresult{"AppSec result?"}
-    wafpolicy{"Failure policy blocks this error?"}
-    next["Invoke the next Traefik handler"]
-
-    request --> enabled
-    enabled -->|No| next
-    enabled -->|Yes| identity --> identityok
-    identityok -->|No| technical
-    identityok -->|Yes| trusted
-    trusted -->|Yes| next
-    trusted -->|No| mode
-    mode -->|No or AppSec-only| appsec
-    mode -->|Yes| lookup --> cached
-    cached -->|Ban or captcha| remediation
-    cached -->|Explicit allow| appsec
-    cached -->|Miss| stream
-    stream -->|Healthy or non-stream mode| appsec
-    stream -->|Unhealthy| closed
-    closed -->|Yes| technical
-    closed -->|No, default| appsec
-    appsec -->|No| next
-    appsec -->|Yes| inspect --> wafresult
-    wafresult -->|Allow| next
-    wafresult -->|Block| remediation
-    wafresult -->|Unavailable or internal error| wafpolicy
-    wafpolicy -->|Block| technical
-    wafpolicy -->|Fail open| next
-```
-
-Cached bans remain effective during a LAPI outage. On a cache miss the stream
-policy fails closed by default; `crowdsecStreamUnreachableBlock: false` is the
-explicit fail-open switch. AppSec availability and internal-error policies are
-configured independently.
 
 ## Verification
 
@@ -337,8 +327,21 @@ Catalog only accepts public GitHub repositories.
 Only stable snapshots are promoted to GitHub. A protected GitLab tag named
 `publish/vX.Y.Z` creates one public commit and the immutable `vX.Y.Z` GitHub
 tag. Public issues and pull requests are welcome; see
-[CONTRIBUTING.md](CONTRIBUTING.md) for their integration path.
+[CONTRIBUTING.md](https://github.com/vandman/pareflux-traefik-gate/blob/main/CONTRIBUTING.md) for their integration path.
 
 ## License
 
+Derived from the Apache-2.0 upstream v1.6.0; original attribution and changes are recorded in [UPSTREAM.md](https://github.com/vandman/pareflux-traefik-gate/blob/main/UPSTREAM.md). PareFlux uses its own Apache-2.0 TTL cache.
+
 Apache-2.0. GPL-3.0, AGPL, and unknown-license dependencies are rejected.
+
+## CI trust contract
+
+Branches and merge requests run without permanent publication secrets. A source
+branch ending in `-nr` has no pipeline. Tests requiring Docker use `vm-runner`
+and its disposable VM daemon; other checks use the container runner.
+Only protected tags may receive publication credentials. Tags are created from
+the operator workstation, with GitLab repository writes disabled for job tokens.
+Deployments, identity administration and runner host maintenance run from the
+workstation. No production SSH key, kubeconfig or OpenBao identity is provided
+to these jobs.

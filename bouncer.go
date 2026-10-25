@@ -60,6 +60,9 @@ const (
 	crowdsecCapiStreamRoute  = "v2/decisions/stream"
 	cacheTimeoutKey          = "updated"
 	maxCrowdSecResponseBytes = 16 << 20
+	maxAppsecResponseBytes   = 64 << 10
+	maxIdleConnections       = 100
+	maxIdlePerHost           = 20
 )
 
 // ##############################################################
@@ -81,6 +84,8 @@ const (
 
 //nolint:gochecknoglobals
 var (
+	lastStreamSuccess       int64
+	lastLiveSuccess         int64
 	isStartup               uint32 = 1
 	isCrowdsecStreamHealthy uint32 = 1
 	updateFailure           int64
@@ -112,6 +117,7 @@ type Bouncer struct {
 	appsecFailureBlock      bool
 	appsecUnreachableBlock  bool
 	appsecBodyLimit         int64
+	appsecBodyExcludedTypes []string
 	crowdsecScheme          string
 	crowdsecHost            string
 	crowdsecPath            string
@@ -157,6 +163,15 @@ type Bouncer struct {
 //
 //nolint:gocyclo
 func New(_ context.Context, next http.Handler, config *configuration.Config, name string) (http.Handler, error) {
+	if config.DashboardIntegration || config.DashboardLinkURL != "" {
+		if config.Enabled {
+			return nil, errors.New("dashboard links require a dedicated middleware instance with enabled=false")
+		}
+		if config.DashboardIntegration {
+			return newDashboardIntegration(next, config.DashboardHost, config.DashboardLinkURL, config.DashboardHealthURL)
+		}
+		return newDashboardMenu(next, config.DashboardHost, config.DashboardLinkURL)
+	}
 	config.LogLevel = strings.ToUpper(config.LogLevel)
 	log := logger.NewWithFormat(config.LogLevel, config.LogFilePath, config.LogFormat)
 	if !config.Enabled {
@@ -227,6 +242,10 @@ func New(_ context.Context, next http.Handler, config *configuration.Config, nam
 	if config.BanHTMLFilePath != "" {
 		banTemplate, _ = configuration.GetHTMLTemplate(config.BanHTMLFilePath)
 	}
+	appsecTimeoutSeconds := config.CrowdsecAppsecTimeoutSeconds
+	if appsecTimeoutSeconds == 0 {
+		appsecTimeoutSeconds = 3
+	}
 
 	bouncer := &Bouncer{
 		next:     next,
@@ -243,6 +262,7 @@ func New(_ context.Context, next http.Handler, config *configuration.Config, nam
 		appsecFailureBlock:      config.CrowdsecAppsecFailureBlock,
 		appsecUnreachableBlock:  config.CrowdsecAppsecUnreachableBlock,
 		appsecBodyLimit:         config.CrowdsecAppsecBodyLimit,
+		appsecBodyExcludedTypes: config.CrowdsecAppsecBodyExcludedContentTypes,
 		crowdsecScheme:          config.CrowdsecLapiScheme,
 		crowdsecHost:            config.CrowdsecLapiHost,
 		crowdsecPath:            config.CrowdsecLapiPath,
@@ -271,19 +291,21 @@ func New(_ context.Context, next http.Handler, config *configuration.Config, nam
 		},
 		httpClient: &http.Client{
 			Transport: &http.Transport{
-				MaxIdleConns:    10,
-				IdleConnTimeout: 30 * time.Second,
-				TLSClientConfig: tlsConfig,
+				MaxIdleConns:        maxIdleConnections,
+				MaxIdleConnsPerHost: maxIdlePerHost,
+				IdleConnTimeout:     90 * time.Second,
+				TLSClientConfig:     tlsConfig,
 			},
 			Timeout: time.Duration(config.HTTPTimeoutSeconds) * time.Second,
 		},
 		httpAppsecClient: &http.Client{
 			Transport: &http.Transport{
-				MaxIdleConns:    10,
-				IdleConnTimeout: 30 * time.Second,
-				TLSClientConfig: tlsAppsecConfig,
+				MaxIdleConns:        maxIdleConnections,
+				MaxIdleConnsPerHost: maxIdlePerHost,
+				IdleConnTimeout:     90 * time.Second,
+				TLSClientConfig:     tlsAppsecConfig,
 			},
-			Timeout: time.Duration(config.HTTPTimeoutSeconds) * time.Second,
+			Timeout: time.Duration(appsecTimeoutSeconds) * time.Second,
 		},
 		cacheClient:   &cache.Client{},
 		captchaClient: &captcha.Client{},
@@ -376,6 +398,7 @@ func (bouncer *Bouncer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	req = req.WithContext(context.WithValue(req.Context(), gateContextKey{}, &gateRequestProof{gate: bouncer}))
 	// A caller must not be able to forge the internal remediation marker.
 	bouncer.sanitizeRemediationMarker(req)
 
@@ -666,6 +689,7 @@ func handleNoStreamCache(bouncer *Bouncer, remoteIP string) (string, error) {
 	}
 
 	if bytes.Equal(body, []byte("null")) {
+		atomic.StoreInt64(&lastLiveSuccess, time.Now().Unix())
 		if isLiveMode {
 			bouncer.cacheClient.Set(remoteIP, cache.NoBannedValue, bouncer.defaultDecisionTimeout)
 		}
@@ -678,6 +702,7 @@ func handleNoStreamCache(bouncer *Bouncer, remoteIP string) (string, error) {
 		return cache.BannedValue, fmt.Errorf("handleNoStreamCache:parseBody %w", err)
 	}
 	if len(decisions) == 0 {
+		atomic.StoreInt64(&lastLiveSuccess, time.Now().Unix())
 		if isLiveMode {
 			bouncer.cacheClient.Set(remoteIP, cache.NoBannedValue, bouncer.defaultDecisionTimeout)
 		}
@@ -710,6 +735,7 @@ func handleNoStreamCache(bouncer *Bouncer, remoteIP string) (string, error) {
 		}
 		bouncer.cacheClient.Set(remoteIP, value, durationSecond)
 	}
+	atomic.StoreInt64(&lastLiveSuccess, time.Now().Unix())
 	return value, errors.New("handleNoStreamCache:banned")
 }
 
@@ -812,6 +838,7 @@ func handleStreamCache(bouncer *Bouncer) error {
 	for _, decision := range stream.Deleted {
 		bouncer.cacheClient.Delete(decision.Value)
 	}
+	atomic.StoreInt64(&lastStreamSuccess, time.Now().Unix())
 	bouncer.log.Info("handleStreamCache:updated")
 	return nil
 }
@@ -928,7 +955,7 @@ func appsecQuery(bouncer *Bouncer, ip string, httpReq *http.Request) error {
 
 	res, err := bouncer.httpAppsecClient.Do(req)
 	if err != nil {
-		bouncer.log.Error("appsecQuery:unreachable")
+		bouncer.log.Error("appsecQuery:unreachable error=" + err.Error())
 		if bouncer.appsecUnreachableBlock {
 			return fmt.Errorf("appsecQuery:unreachable %w", err)
 		}
@@ -939,6 +966,9 @@ func appsecQuery(bouncer *Bouncer, ip string, httpReq *http.Request) error {
 			bouncer.log.Error("appsecQuery:closeBody " + err.Error())
 		}
 	}()
+	if _, drainErr := io.Copy(io.Discard, io.LimitReader(res.Body, maxAppsecResponseBytes)); drainErr != nil {
+		return fmt.Errorf("appsecQuery:readBody %w", drainErr)
+	}
 	if res.StatusCode == http.StatusInternalServerError {
 		bouncer.log.Info("appsecQuery:failure")
 		if bouncer.appsecFailureBlock {
@@ -950,9 +980,10 @@ func appsecQuery(bouncer *Bouncer, ip string, httpReq *http.Request) error {
 		return fmt.Errorf("appsecQuery statusCode:%d", res.StatusCode)
 	}
 
-	if err != nil {
-		return fmt.Errorf("appsecQuery:readBody %w", err)
+	if proof, ok := httpReq.Context().Value(gateContextKey{}).(*gateRequestProof); ok {
+		proof.appsecConfirmed = true
 	}
+
 	return nil
 }
 
@@ -975,6 +1006,16 @@ func shouldInspectAppsecBody(bouncer *Bouncer, req *http.Request) bool {
 	}
 	if strings.HasPrefix(strings.ToLower(req.Header.Get("Content-Type")), "application/grpc") {
 		return false
+	}
+	contentType := strings.ToLower(strings.TrimSpace(strings.Split(req.Header.Get("Content-Type"), ";")[0]))
+	for _, excluded := range bouncer.appsecBodyExcludedTypes {
+		excluded = strings.ToLower(strings.TrimSpace(excluded))
+		if excluded == "" {
+			continue
+		}
+		if contentType == excluded || (strings.HasSuffix(excluded, "/") && strings.HasPrefix(contentType, excluded)) {
+			return false
+		}
 	}
 	return !strings.EqualFold(req.Header.Get("Upgrade"), "websocket")
 }

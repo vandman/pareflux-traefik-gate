@@ -8,7 +8,7 @@
 # Calls: Go toolchain, diff and scripts/check-licenses.sh
 ###############################################################################
 
-FROM golang:1.26.5-bookworm
+FROM golang:1.27.3-trixie
 
 WORKDIR /src
 COPY . .
