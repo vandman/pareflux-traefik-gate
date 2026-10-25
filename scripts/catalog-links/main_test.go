@@ -1,0 +1,171 @@
+// SPDX-License-Identifier: Apache-2.0
+// FR: Vérifie la navigation du catalogue, la préservation du code et le refus de liens cassés.
+// EN: Verifies catalog navigation, code preservation and rejection of broken links.
+// Called by: go test and release verification; Calls: publication link exporter.
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// fixture
+// FR: Crée un petit dépôt documentaire isolé, sans réseau ni données de déploiement.
+// EN: Creates a small isolated documentation repository without network or deployment data.
+// Called by: tests; Calls: temporary filesystem.
+func fixture(t *testing.T) exporter {
+	t.Helper()
+	root := t.TempDir()
+	for path, body := range map[string]string{"README.md": "# Start\n\n## Setup\n", "LISEZMOI.md": "# Début\n", "docs/guide.md": "# Guide\n", "docs/guide (FR).md": "# Guide français\n", ".assets/icon.svg": "<svg/>"} {
+		name := filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(name), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(name, []byte(body), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return exporter{root, "github.com/example/plugin", "v1.2.3"}
+}
+
+// TestCatalogNavigation
+// FR: Garantit des liens immuables utilisables depuis un site tiers et dans les deux langues.
+// EN: Ensures immutable links usable from a third-party site and in both languages.
+// Called by: go test; Calls: transform, run.
+func TestCatalogNavigation(t *testing.T) {
+	e := fixture(t)
+	document := filepath.Join(e.root, "README.md")
+	source := `[Français](LISEZMOI.md)
+[Setup](#setup)
+[Guide](docs/guide.md "Read this")
+[Guide FR](<docs/guide (FR).md>)
+![Icon](.assets/icon.svg)
+[Files](docs)
+[ref]: docs/guide.md
+<img src=".assets/icon.svg"><a href="LISEZMOI.md">FR</a>
+[Old main](https://github.com/example/plugin/blob/main/LISEZMOI.md)
+[Outside](https://example.org/page)
+` + "`[literal](missing.md)`\n```yaml\nurl: '[not a link](missing.md)'\n```\n"
+	result, err := e.transform(document, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"https://github.com/example/plugin/blob/v1.2.3/LISEZMOI.md", "[Setup](#setup)", "https://github.com/example/plugin/blob/v1.2.3/docs/guide.md", "https://github.com/example/plugin/blob/v1.2.3/docs/guide%20%28FR%29.md", "https://raw.githubusercontent.com/example/plugin/v1.2.3/.assets/icon.svg", "https://github.com/example/plugin/tree/v1.2.3/docs", "[Outside](https://example.org/page)", "`[literal](missing.md)`", "url: '[not a link](missing.md)'"} {
+		if !strings.Contains(result, expected) {
+			t.Errorf("missing %q in %s", expected, result)
+		}
+	}
+	again, err := e.transform(document, result)
+	if err != nil || again != result {
+		t.Fatal("rewriting must be idempotent", err)
+	}
+	child, err := e.transform(filepath.Join(e.root, "docs/guide.md"), "[Back](../README.md#setup)")
+	if err != nil || !strings.Contains(child, "/blob/v1.2.3/README.md#setup") {
+		t.Fatal(child, err)
+	}
+}
+
+// TestBrokenTargetsStopPublication
+// FR: Empêche les 404 et les sorties du dépôt avant toute modification du paquet exporté.
+// EN: Prevents missing targets and repository escapes before modifying the export package.
+// Called by: go test; Calls: target and run.
+func TestBrokenTargetsStopPublication(t *testing.T) {
+	e := fixture(t)
+	doc := filepath.Join(e.root, "README.md")
+	for _, target := range []string{"missing.md", "README.md#missing", "../../outside.md", "https://raw.githubusercontent.com/example/plugin", "https://raw.githubusercontent.com/example/plugin/main", "https://raw.githubusercontent.com/example/plugin/main/docs"} {
+		if _, err := e.target(doc, target, false); err == nil {
+			t.Errorf("accepted invalid target %q", target)
+		}
+	}
+	before := "# Start\n\n[Good](LISEZMOI.md)\n[Bad](missing.md)\n"
+	if err := os.WriteFile(doc, []byte(before), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(e.root, e.module, e.version, false); err == nil {
+		t.Fatal("missing file should block publication")
+	}
+	actual, _ := os.ReadFile(doc)
+	if string(actual) != before {
+		t.Fatal("failed validation partially rewrote documents")
+	}
+}
+
+// TestCheckModeAndSymlinks
+// FR: Le contrôle ne modifie rien et rejette un fichier pointant hors du dépôt.
+// EN: Check mode changes nothing and rejects a file pointing outside the repository.
+// Called by: go test; Calls: run and target.
+func TestCheckModeAndSymlinks(t *testing.T) {
+	e := fixture(t)
+	doc := filepath.Join(e.root, "README.md")
+	if err := os.WriteFile(doc, []byte("[FR](LISEZMOI.md)\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(e.root, e.module, e.version, true); err == nil {
+		t.Fatal("check accepted unprepared links")
+	}
+	if err := run(e.root, e.module, e.version, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(e.root, e.module, e.version, true); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	if err := os.WriteFile(outside, []byte("# Outside\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(e.root, "escape.md")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.target(doc, "escape.md", false); err == nil {
+		t.Fatal("accepted external symlink")
+	}
+}
+
+// TestCodeAndIncompleteRawLinks
+// FR: Préserve les exemples imbriqués et refuse les URL raw incomplètes, même en texte libre.
+// EN: Preserves nested examples and rejects incomplete raw URLs even in plain text.
+// Called by: go test; Calls: transform.
+func TestCodeAndIncompleteRawLinks(t *testing.T) {
+	e := fixture(t)
+	doc := filepath.Join(e.root, "README.md")
+	source := "````markdown\n```\n[not a link](missing.md)\n```\n````\n    [indented code](missing.md)\n"
+	value, err := e.transform(doc, source)
+	if err != nil || value != source {
+		t.Fatal("code example modified", err)
+	}
+	for _, text := range []string{"https://raw.githubusercontent.com/example/plugin", "<https://raw.githubusercontent.com/example/plugin>", "[bad](https://raw.githubusercontent.com/example/plugin/main)"} {
+		if _, err := e.transform(doc, text); err == nil {
+			t.Errorf("accepted incomplete raw link %q", text)
+		}
+	}
+}
+
+// TestOnlyCatalogReadmeChanges
+// FR: Garantit que les documents ouverts sur GitHub conservent leurs liens relatifs.
+// EN: Ensures documents opened on GitHub retain their relative links.
+// Called by: go test; Calls: run and local filesystem.
+func TestOnlyCatalogReadmeChanges(t *testing.T) {
+	e := fixture(t)
+	readme := filepath.Join(e.root, "README.md")
+	other := filepath.Join(e.root, "LISEZMOI.md")
+	before := "# Début\n[Retour](README.md)\n"
+	if err := os.WriteFile(other, []byte(before), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(readme, []byte("# Start\n[FR](LISEZMOI.md)\n[Start](#start)\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(e.root, e.module, e.version, false); err != nil {
+		t.Fatal(err)
+	}
+	actual, err := os.ReadFile(other)
+	if err != nil || string(actual) != before {
+		t.Fatal("non-catalog document changed", err)
+	}
+	actual, err = os.ReadFile(readme)
+	if err != nil || !strings.Contains(string(actual), "blob/v1.2.3/LISEZMOI.md") || !strings.Contains(string(actual), "[Start](#start)") {
+		t.Fatal("catalog links incorrect", err)
+	}
+}

@@ -1,13 +1,35 @@
 # PareFlux Gate
 
-**CrowdSec IP decisions and AppSec HTTP inspection inside Traefik.**
+**Connect Traefik to CrowdSec to block malicious access to your web applications.**
 
-**English** · [Français](https://github.com/vandman/pareflux-traefik-gate/blob/main/LISEZMOI.md) · [Traefik catalog](https://plugins.traefik.io/plugins/6a6da8539dbe8a37899c23c8/pare-flux-gate)
+> **The plugin alone is not a complete protection system.** PareFlux Gate does
+> **not include CrowdSec**. In the standard installation, a separate CrowdSec
+> service must be available, either already installed or deployed alongside Traefik.
+> **The PareFlux console is optional; the CrowdSec protection source is not.**
 
-PareFlux Gate rejects requests covered by a CrowdSec decision and can inspect
-other requests with AppSec to detect HTTP attacks. It runs inside Traefik,
-using an in-memory or Redis decision cache. It opens no additional listening
-port. The PareFlux Control console is optional.
+**English** · [Français](https://github.com/vandman/pareflux-traefik-gate/blob/v0.1.16/LISEZMOI.md) · [Traefik catalog](https://plugins.traefik.io/plugins/6a6da8539dbe8a37899c23c8/pare-flux-gate)
+
+PareFlux Gate runs inside Traefik, the service that receives connections to your
+web applications. CrowdSec runs separately: it detects suspicious activity and
+provides blocking instructions, such as refusing an IP address for one hour.
+PareFlux Gate applies those instructions to incoming connections.
+
+CrowdSec can also examine the current web request to identify an attack. This
+optional CrowdSec feature is called **AppSec**; it is not included in the plugin.
+The **PareFlux console (PareFlux Control)** is a separate, optional interface for
+viewing and administering the protection.
+
+| Component | Needed? | Included in the plugin? |
+| --- | --- | --- |
+| Traefik, which receives connections to applications | Yes | No |
+| PareFlux Gate, which applies protection inside Traefik | Yes | This is the plugin |
+| CrowdSec, which supplies blocking instructions | Yes, as the protection source | **No; it operates separately** |
+| AppSec, the CrowdSec feature that examines web requests | Optional | No |
+| PareFlux console, for viewing and administering protection | Optional | No |
+
+The complete Compose example installs Traefik with PareFlux Gate and a separate
+CrowdSec service with AppSec enabled. **The example assembles these services;
+CrowdSec is not embedded in the plugin.**
 
 ## Contents
 
@@ -51,7 +73,7 @@ explicitly selects `stream`.
 
 ## Installation
 
-The public example pins **v0.1.14**. Static configuration loads the plugin at
+The public example pins **v0.1.16**. Static configuration loads the plugin at
 startup; dynamic configuration enables it and attaches it to protected routes.
 Registering the plugin alone does not protect any route.
 
@@ -76,7 +98,7 @@ experimental:
   plugins:
     parefluxgate:
       moduleName: github.com/vandman/pareflux-traefik-gate
-      version: v0.1.14
+      version: v0.1.16
 ```
 
 Restart Traefik after changing the plugin version. Use the existing file
@@ -149,7 +171,7 @@ other application routers to protect them too.
 
 ### Complete demonstration
 
-The [Compose example](https://github.com/vandman/pareflux-traefik-gate/tree/main/examples/compose)
+The [Compose example](https://github.com/vandman/pareflux-traefik-gate/tree/v0.1.16/examples/compose)
 includes Traefik, CrowdSec, AppSec and Whoami. After obtaining the repository:
 
 ```bash
@@ -196,7 +218,7 @@ prove that log acquisition or AppSec rules work.
 | `forwardedHeadersTrustedIps` | `[]` | Proxies allowed to supply the visitor's IP |
 | `clientTrustedIps` | `[]` | Clients bypassing **all** Gate checks |
 
-The [complete configuration reference](https://github.com/vandman/pareflux-traefik-gate/blob/main/docs/configuration.EN.md)
+The [complete configuration reference](https://github.com/vandman/pareflux-traefik-gate/blob/v0.1.16/docs/configuration.EN.md)
 covers types, defaults, secret files, TLS, Redis and captcha. Names match the
 PareFlux code: an option present in another CrowdSec fork is not necessarily
 available here.
@@ -234,14 +256,14 @@ Traefik process; separate middleware instances are not isolated CrowdSec engines
 ## Architecture
 
 Diagrams and detailed explanations are in the separate
-[PareFlux Gate architecture](https://github.com/vandman/pareflux-traefik-gate/blob/main/docs/architecture.EN.md)
+[PareFlux Gate architecture](https://github.com/vandman/pareflux-traefik-gate/blob/v0.1.16/docs/architecture.EN.md)
 document: components, network traffic, HTTP processing and failure decisions.
 
 ## PareFlux console and Traefik dashboard
 
 The protection plugin works without PareFlux Control. The optional dashboard
 integration adds a PareFlux link, a “Connected / Protected” tile and private
-URL exchange with Control. See the [dedicated configuration](https://github.com/vandman/pareflux-traefik-gate/blob/main/docs/dashboard-menu.EN.md).
+URL exchange with Control. See the [dedicated configuration](https://github.com/vandman/pareflux-traefik-gate/blob/v0.1.16/docs/dashboard-menu.EN.md).
 URLs come from deployment configuration; standalone Control displays no ingress
 return link.
 
@@ -327,11 +349,14 @@ Catalog only accepts public GitHub repositories.
 Only stable snapshots are promoted to GitHub. A protected GitLab tag named
 `publish/vX.Y.Z` creates one public commit and the immutable `vX.Y.Z` GitHub
 tag. Public issues and pull requests are welcome; see
-[CONTRIBUTING.md](https://github.com/vandman/pareflux-traefik-gate/blob/main/CONTRIBUTING.md) for their integration path.
+[CONTRIBUTING.md](https://github.com/vandman/pareflux-traefik-gate/blob/v0.1.16/CONTRIBUTING.md) for their integration path.
+
+The [catalog publication guide](https://github.com/vandman/pareflux-traefik-gate/blob/v0.1.16/docs/publication.EN.md) describes automatic
+README link preparation and release checks.
 
 ## License
 
-Derived from the Apache-2.0 upstream v1.6.0; original attribution and changes are recorded in [UPSTREAM.md](https://github.com/vandman/pareflux-traefik-gate/blob/main/UPSTREAM.md). PareFlux uses its own Apache-2.0 TTL cache.
+Derived from the Apache-2.0 upstream v1.6.0; original attribution and changes are recorded in [UPSTREAM.md](https://github.com/vandman/pareflux-traefik-gate/blob/v0.1.16/UPSTREAM.md). PareFlux uses its own Apache-2.0 TTL cache.
 
 Apache-2.0. GPL-3.0, AGPL, and unknown-license dependencies are rejected.
 

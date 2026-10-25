@@ -40,7 +40,7 @@ services:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
       - --experimental.plugins.parefluxgate.modulename=github.com/vandman/pareflux-traefik-gate
-      - --experimental.plugins.parefluxgate.version=v0.1.14
+      - --experimental.plugins.parefluxgate.version=v0.1.16
     ports:
       - 127.0.0.1:18080:80
     volumes:

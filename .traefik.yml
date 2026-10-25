@@ -13,7 +13,7 @@ iconPath: .assets/icon.png
 
 import: github.com/vandman/pareflux-traefik-gate
 
-summary: CrowdSec decisions and AppSec protection for Traefik
+summary: Applies CrowdSec protection in Traefik; CrowdSec is required and installed separately.
 
 testData:
   Enabled: false

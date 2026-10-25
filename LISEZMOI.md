@@ -1,13 +1,35 @@
 # PareFlux Gate
 
-**Protection IP CrowdSec et inspection HTTP AppSec dans Traefik.**
+**Reliez Traefik à CrowdSec pour bloquer les accès malveillants à vos applications web.**
+
+> **Le plugin seul ne constitue pas un système de protection complet.** PareFlux
+> Gate **ne contient pas CrowdSec**. Dans l’installation standard, un service
+> CrowdSec distinct doit être disponible, déjà installé ou déployé avec Traefik.
+> **La console PareFlux est facultative ; la source de protection CrowdSec ne l’est pas.**
 
 [English](https://github.com/vandman/pareflux-traefik-gate/blob/main/README.md) · **Français** · [Catalogue Traefik](https://plugins.traefik.io/plugins/6a6da8539dbe8a37899c23c8/pare-flux-gate)
 
-PareFlux Gate bloque les requêtes concernées par une décision CrowdSec et peut
-soumettre les autres à AppSec pour détecter une attaque HTTP. Il s’exécute dans
-Traefik, avec un cache de décisions en mémoire ou Redis. Il n’ouvre aucun port
-supplémentaire. La console PareFlux Control est facultative.
+PareFlux Gate s’exécute dans Traefik, le service qui reçoit les connexions à vos
+applications web. CrowdSec fonctionne séparément : il repère les activités
+suspectes et fournit des consignes de blocage, par exemple refuser une adresse IP
+pendant une heure. PareFlux Gate applique ces consignes aux connexions entrantes.
+
+CrowdSec peut aussi examiner la requête web en cours pour reconnaître une
+attaque. Cette fonction facultative de CrowdSec s’appelle **AppSec** ; elle n’est
+pas incluse dans le plugin. La **console PareFlux (PareFlux Control)** est une
+interface séparée et facultative pour consulter et administrer la protection.
+
+| Composant | Nécessaire ? | Fourni dans le plugin ? |
+| --- | --- | --- |
+| Traefik, qui reçoit les connexions aux applications | Oui | Non |
+| PareFlux Gate, qui applique la protection dans Traefik | Oui | C’est le plugin |
+| CrowdSec, qui fournit les consignes de blocage | Oui, comme source de protection | **Non, il fonctionne séparément** |
+| AppSec, la fonction CrowdSec qui examine les requêtes web | Facultatif | Non |
+| Console PareFlux, pour consulter et administrer la protection | Facultative | Non |
+
+L’exemple Compose complet installe Traefik avec PareFlux Gate et un service
+CrowdSec distinct avec AppSec activé. **L’exemple assemble ces services ;
+CrowdSec n’est pas embarqué dans le plugin.**
 
 ## Sommaire
 
@@ -51,7 +73,7 @@ ci-dessous choisit explicitement `stream`.
 
 ## Installation
 
-L’exemple public utilise la version **v0.1.14**. La configuration statique
+L’exemple public utilise la version **v0.1.16**. La configuration statique
 charge le plugin au démarrage ; la configuration dynamique l’active et le
 rattache aux routes à protéger. Déclarer le plugin seul ne protège aucune route.
 
@@ -76,7 +98,7 @@ experimental:
   plugins:
     parefluxgate:
       moduleName: github.com/vandman/pareflux-traefik-gate
-      version: v0.1.14
+      version: v0.1.16
 ```
 
 Redémarrer Traefik après un changement de version du plugin. Utiliser le
@@ -332,6 +354,9 @@ nommé `publish/vX.Y.Z` crée un unique commit public et le tag GitHub immuable
 `vX.Y.Z`. Les issues et pull requests publiques sont les bienvenues ; leur
 parcours d'intégration est décrit dans
 [CONTRIBUTING.FR.md](CONTRIBUTING.FR.md).
+
+Le [guide de publication du catalogue](docs/publication.FR.md) décrit la
+préparation automatique des liens du README et les contrôles de publication.
 
 ## Licence
 
