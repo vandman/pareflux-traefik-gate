@@ -18,17 +18,27 @@ Cliquer sur un lien vers un autre document quitte le catalogue.
 
 Commiter les sources validées et choisir un numéro stable encore inutilisé.
 Le tag GitLab principal est `publish/vX.Y.Z` ; le tag GitHub public est `vX.Y.Z`.
-Les tags publics existants sont immuables. Vérifier avant de publier :
+Les tags existants sont immuables. GitLab est la source de référence et sa CI
+est le seul chemin de publication vers GitHub. Après les vérifications locales :
 
 ```bash
-PUBLISH_DRY_RUN=1 ./scripts/publish-github.sh vX.Y.Z
-./scripts/publish-github.sh vX.Y.Z
+PUBLISH_DRY_RUN=1 PAREFLUX_GITHUB_REPOSITORY=https://github.com/vandman/pareflux-traefik-gate.git ./scripts/publish-github.sh vX.Y.Z
+git push origin HEAD:main
+git tag -a publish/vX.Y.Z -m "PareFlux Gate vX.Y.Z"
+git push origin refs/tags/publish/vX.Y.Z
 ```
 
-La publication travaille sur un export isolé et ne réécrit jamais le dépôt
-source. Git, Bash et Go ou Docker sont nécessaires. Une clef de publication CI
-configurée et protégée permet de publier par la pipeline ; sinon, le mainteneur
-publie depuis le poste après la réussite des contrôles de la version.
+La pipeline du tag protégé exécute les tests Go et l'intégration Traefik/Yaegi,
+puis publie l'export et le tag `vX.Y.Z` sur GitHub de manière atomique. La variable
+GitLab `PAREFLUX_GITHUB_DEPLOY_KEY` doit être de type fichier et protégée ; sa clé
+publique doit avoir le droit d'écriture sur le seul dépôt GitHub du plugin.
+Une clé absente fait échouer le job de publication au lieu de l'ignorer.
+Consulter la pipeline du tag pour confirmer la publication. En cas d'échec,
+corriger la cause et relancer le job approprié ; ne pas publier depuis le poste.
+
+L'export isolé utilise `.local/publication-work`, ignoré par Git, et est supprimé
+à la fin. Git, Bash et Go ou Docker sont nécessaires. La simulation locale
+ne publie rien. Aucun tag existant ne doit être déplacé ou republié.
 
 ## Préparation des liens
 

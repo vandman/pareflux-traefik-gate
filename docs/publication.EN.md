@@ -17,17 +17,27 @@ GitHub and retain their relative links. Links to other documents leave the catal
 
 Commit the validated source and use an unused stable version tag. The primary
 GitLab release tag is `publish/vX.Y.Z`; the public GitHub tag is `vX.Y.Z`.
-Existing public tags are immutable. Run the checks before the actual publication:
+Existing tags are immutable. GitLab is the source of truth and its CI is the
+only publication path to GitHub. After local verification:
 
 ```bash
-PUBLISH_DRY_RUN=1 ./scripts/publish-github.sh vX.Y.Z
-./scripts/publish-github.sh vX.Y.Z
+PUBLISH_DRY_RUN=1 PAREFLUX_GITHUB_REPOSITORY=https://github.com/vandman/pareflux-traefik-gate.git ./scripts/publish-github.sh vX.Y.Z
+git push origin HEAD:main
+git tag -a publish/vX.Y.Z -m "PareFlux Gate vX.Y.Z"
+git push origin refs/tags/publish/vX.Y.Z
 ```
 
-The publisher works in an isolated export; it never rewrites the source checkout.
-Git, Bash and either Go or Docker are required. A configured protected CI deploy
-key can publish through the release pipeline; otherwise the maintainer uses the
-workstation after the release checks succeed.
+The protected tag pipeline runs Go tests and real Traefik/Yaegi integration,
+then atomically publishes the export and `vX.Y.Z` tag on GitHub. The GitLab
+`PAREFLUX_GITHUB_DEPLOY_KEY` variable must be a protected file variable; its
+public key must have write access to the plugin GitHub repository only.
+A missing key fails publication instead of silently omitting the job.
+Check the tag pipeline to confirm publication. On failure, fix the cause and
+retry the appropriate job; do not publish from the workstation.
+
+The isolated export uses Git-ignored `.local/publication-work` and is removed
+on exit. Git, Bash and Go or Docker are required. Local dry runs do not publish.
+Never move or republish an existing tag.
 
 ## Link preparation
 

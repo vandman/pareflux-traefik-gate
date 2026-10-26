@@ -7,7 +7,7 @@
 > service must be available, either already installed or deployed alongside Traefik.
 > **The PareFlux console is optional; the CrowdSec protection source is not.**
 
-**English** · [Français](https://www.github.com/vandman/pareflux-traefik-gate/blob/v0.1.17/LISEZMOI.md) · [Traefik catalog](https://plugins.traefik.io/plugins/6a6da8539dbe8a37899c23c8/pare-flux-gate)
+**English** · [Français](https://www.github.com/vandman/pareflux-traefik-gate/blob/v0.1.18/LISEZMOI.md) · [Traefik catalog](https://plugins.traefik.io/plugins/6a6da8539dbe8a37899c23c8/pare-flux-gate)
 
 PareFlux Gate runs inside Traefik, the service that receives connections to your
 web applications. CrowdSec runs separately: it detects suspicious activity and
@@ -171,7 +171,7 @@ other application routers to protect them too.
 
 ### Complete demonstration
 
-The [Compose example](https://www.github.com/vandman/pareflux-traefik-gate/tree/v0.1.17/examples/compose)
+The [Compose example](https://www.github.com/vandman/pareflux-traefik-gate/tree/v0.1.18/examples/compose)
 includes Traefik, CrowdSec, AppSec and Whoami. After obtaining the repository:
 
 ```bash
@@ -218,7 +218,7 @@ prove that log acquisition or AppSec rules work.
 | `forwardedHeadersTrustedIps` | `[]` | Proxies allowed to supply the visitor's IP |
 | `clientTrustedIps` | `[]` | Clients bypassing **all** Gate checks |
 
-The [complete configuration reference](https://www.github.com/vandman/pareflux-traefik-gate/blob/v0.1.17/docs/configuration.EN.md)
+The [complete configuration reference](https://www.github.com/vandman/pareflux-traefik-gate/blob/v0.1.18/docs/configuration.EN.md)
 covers types, defaults, secret files, TLS, Redis and captcha. Names match the
 PareFlux code: an option present in another CrowdSec fork is not necessarily
 available here.
@@ -256,14 +256,14 @@ Traefik process; separate middleware instances are not isolated CrowdSec engines
 ## Architecture
 
 Diagrams and detailed explanations are in the separate
-[PareFlux Gate architecture](https://www.github.com/vandman/pareflux-traefik-gate/blob/v0.1.17/docs/architecture.EN.md)
+[PareFlux Gate architecture](https://www.github.com/vandman/pareflux-traefik-gate/blob/v0.1.18/docs/architecture.EN.md)
 document: components, network traffic, HTTP processing and failure decisions.
 
 ## PareFlux console and Traefik dashboard
 
 The protection plugin works without PareFlux Control. The optional dashboard
 integration adds a PareFlux link, a “Connected / Protected” tile and private
-URL exchange with Control. See the [dedicated configuration](https://www.github.com/vandman/pareflux-traefik-gate/blob/v0.1.17/docs/dashboard-menu.EN.md).
+URL exchange with Control. See the [dedicated configuration](https://www.github.com/vandman/pareflux-traefik-gate/blob/v0.1.18/docs/dashboard-menu.EN.md).
 URLs come from deployment configuration; standalone Control displays no ingress
 return link.
 
@@ -349,14 +349,14 @@ Catalog only accepts public GitHub repositories.
 Only stable snapshots are promoted to GitHub. A protected GitLab tag named
 `publish/vX.Y.Z` creates one public commit and the immutable `vX.Y.Z` GitHub
 tag. Public issues and pull requests are welcome; see
-[CONTRIBUTING.md](https://www.github.com/vandman/pareflux-traefik-gate/blob/v0.1.17/CONTRIBUTING.md) for their integration path.
+[CONTRIBUTING.md](https://www.github.com/vandman/pareflux-traefik-gate/blob/v0.1.18/CONTRIBUTING.md) for their integration path.
 
-The [catalog publication guide](https://www.github.com/vandman/pareflux-traefik-gate/blob/v0.1.17/docs/publication.EN.md) describes automatic
+The [catalog publication guide](https://www.github.com/vandman/pareflux-traefik-gate/blob/v0.1.18/docs/publication.EN.md) describes automatic
 README link preparation and release checks.
 
 ## License
 
-Derived from the Apache-2.0 upstream v1.6.0; original attribution and changes are recorded in [UPSTREAM.md](https://www.github.com/vandman/pareflux-traefik-gate/blob/v0.1.17/UPSTREAM.md). PareFlux uses its own Apache-2.0 TTL cache.
+Derived from the Apache-2.0 upstream v1.6.0; original attribution and changes are recorded in [UPSTREAM.md](https://www.github.com/vandman/pareflux-traefik-gate/blob/v0.1.18/UPSTREAM.md). PareFlux uses its own Apache-2.0 TTL cache.
 
 Apache-2.0. GPL-3.0, AGPL, and unknown-license dependencies are rejected.
 
