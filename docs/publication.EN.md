@@ -34,8 +34,9 @@ workstation after the release checks succeed.
 `scripts/catalog-links` is a standard-library Go utility invoked automatically
 by the publisher, before its existing compilation and license checks:
 
-- Within the README only, documentation files link to GitHub `blob/<release>/...` pages.
+- Within the README only, documentation files link to GitHub `blob/<release>/...` pages. Browsing links use `www.github.com`, which redirects to canonical GitHub pages and avoids the catalog renderer rewriting `github.com` links to raw downloads.
 - Directories link to GitHub `tree/<release>/...` pages.
+- Raw repository roots used as navigation links are converted to repository pages; raw image targets must name a file.
 - Images use complete `raw.githubusercontent.com/<owner>/<repository>/<release>/<file>` URLs.
 - Relative paths, language links, references, HTML links and contents links are resolved from their source document.
 - Repository links pointing at `main` or `master` are pinned to the release.

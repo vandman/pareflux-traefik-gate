@@ -52,7 +52,7 @@ func TestCatalogNavigation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"https://github.com/example/plugin/blob/v1.2.3/LISEZMOI.md", "[Setup](#setup)", "https://github.com/example/plugin/blob/v1.2.3/docs/guide.md", "https://github.com/example/plugin/blob/v1.2.3/docs/guide%20%28FR%29.md", "https://raw.githubusercontent.com/example/plugin/v1.2.3/.assets/icon.svg", "https://github.com/example/plugin/tree/v1.2.3/docs", "[Outside](https://example.org/page)", "`[literal](missing.md)`", "url: '[not a link](missing.md)'"} {
+	for _, expected := range []string{"https://www.github.com/example/plugin/blob/v1.2.3/LISEZMOI.md", "[Setup](#setup)", "https://www.github.com/example/plugin/blob/v1.2.3/docs/guide.md", "https://www.github.com/example/plugin/blob/v1.2.3/docs/guide%20%28FR%29.md", "https://raw.githubusercontent.com/example/plugin/v1.2.3/.assets/icon.svg", "https://www.github.com/example/plugin/tree/v1.2.3/docs", "[Outside](https://example.org/page)", "`[literal](missing.md)`", "url: '[not a link](missing.md)'"} {
 		if !strings.Contains(result, expected) {
 			t.Errorf("missing %q in %s", expected, result)
 		}
@@ -74,7 +74,7 @@ func TestCatalogNavigation(t *testing.T) {
 func TestBrokenTargetsStopPublication(t *testing.T) {
 	e := fixture(t)
 	doc := filepath.Join(e.root, "README.md")
-	for _, target := range []string{"missing.md", "README.md#missing", "../../outside.md", "https://raw.githubusercontent.com/example/plugin", "https://raw.githubusercontent.com/example/plugin/main", "https://raw.githubusercontent.com/example/plugin/main/docs"} {
+	for _, target := range []string{"missing.md", "README.md#missing", "../../outside.md", "https://raw.githubusercontent.com/example/plugin/main"} {
 		if _, err := e.target(doc, target, false); err == nil {
 			t.Errorf("accepted invalid target %q", target)
 		}
@@ -135,7 +135,7 @@ func TestCodeAndIncompleteRawLinks(t *testing.T) {
 	if err != nil || value != source {
 		t.Fatal("code example modified", err)
 	}
-	for _, text := range []string{"https://raw.githubusercontent.com/example/plugin", "<https://raw.githubusercontent.com/example/plugin>", "[bad](https://raw.githubusercontent.com/example/plugin/main)"} {
+	for _, text := range []string{"https://raw.githubusercontent.com/example/plugin/main", "[bad](https://raw.githubusercontent.com/example/plugin/main)"} {
 		if _, err := e.transform(doc, text); err == nil {
 			t.Errorf("accepted incomplete raw link %q", text)
 		}
@@ -167,5 +167,36 @@ func TestOnlyCatalogReadmeChanges(t *testing.T) {
 	actual, err = os.ReadFile(readme)
 	if err != nil || !strings.Contains(string(actual), "blob/v1.2.3/LISEZMOI.md") || !strings.Contains(string(actual), "[Start](#start)") {
 		t.Fatal("catalog links incorrect", err)
+	}
+}
+
+// TestReadableGitHubLinksSurviveCatalogRewrite covers the actual external renderer rule.
+// FR: Évite la conversion automatique github.com vers raw, sans casser les images.
+// EN: Avoids automatic github.com-to-raw rewriting without breaking images.
+// Called by: go test; Calls: target and catalog URL rule observed in its published frontend.
+func TestReadableGitHubLinksSurviveCatalogRewrite(t *testing.T) {
+	e := fixture(t)
+	doc := filepath.Join(e.root, "README.md")
+	for _, test := range []struct{ source, want string }{
+		{"https://github.com/example/plugin", "https://www.github.com/example/plugin"},
+		{"https://raw.githubusercontent.com/example/plugin", "https://www.github.com/example/plugin"},
+		{"https://raw.githubusercontent.com/example/plugin/main/docs/guide.md", "https://www.github.com/example/plugin/blob/v1.2.3/docs/guide.md"},
+		{"https://github.com/example/plugin/tree/main/docs", "https://www.github.com/example/plugin/tree/v1.2.3/docs"},
+		{"https://www.github.com/example/plugin/blob/v1.2.3/docs/guide.md", "https://www.github.com/example/plugin/blob/v1.2.3/docs/guide.md"},
+	} {
+		got, err := e.target(doc, test.source, false)
+		if err != nil || got != test.want {
+			t.Fatalf("%s -> %s (%v), want %s", test.source, got, err, test.want)
+		}
+		if strings.HasPrefix(got, "https://github.com/") {
+			t.Fatal("Traefik rewrites this host to raw")
+		}
+	}
+	image, err := e.target(doc, "https://raw.githubusercontent.com/example/plugin/main/.assets/icon.svg", true)
+	if err != nil || image != "https://raw.githubusercontent.com/example/plugin/v1.2.3/.assets/icon.svg" {
+		t.Fatalf("image changed: %s (%v)", image, err)
+	}
+	if _, err := e.target(doc, "https://raw.githubusercontent.com/example/plugin/main/docs", true); err == nil {
+		t.Fatal("image cannot reference a directory")
 	}
 }

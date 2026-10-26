@@ -116,12 +116,20 @@ func slug(text string) string {
 func (e exporter) target(document, raw string, image bool) (string, error) {
 	raw = strings.ReplaceAll(strings.ReplaceAll(raw, `\(`, "("), `\)`, ")")
 	localFragment := strings.HasPrefix(raw, "#")
+	// FR: Le catalogue transforme github.com en raw ; www redirige vers la page lisible.
+	// EN: The catalog rewrites github.com to raw; www redirects to the readable page.
+	if strings.HasPrefix(raw, "https://www.github.com/") {
+		raw = "https://github.com/" + strings.TrimPrefix(raw, "https://www.github.com/")
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "", fmt.Errorf("invalid documentation target %q", raw)
 	}
 	if u.Scheme != "" || u.Host != "" {
 		rawRoot := "https://raw.githubusercontent.com/" + strings.TrimPrefix(e.module, "github.com/")
+		if !image && (strings.TrimRight(raw, "/") == rawRoot || strings.TrimRight(raw, "/") == "https://"+e.module) {
+			return "https://www." + e.module, nil
+		}
 		if strings.TrimRight(raw, "/") == rawRoot {
 			return "", fmt.Errorf("raw GitHub URL requires a version and file path: %q", raw)
 		}
@@ -147,7 +155,6 @@ func (e exporter) target(document, raw string, image bool) (string, error) {
 			if strings.HasPrefix(raw, rawPrefix+ref) {
 				suffix = strings.TrimPrefix(raw, rawPrefix+ref)
 				kind = "raw"
-				image = true
 				break
 			}
 		}
@@ -232,9 +239,9 @@ func (e exporter) target(document, raw string, image bool) (string, error) {
 		segments[i] = url.PathEscape(segments[i])
 	}
 	encoded := strings.Join(segments, "/")
-	base := "https://" + e.module + "/blob/" + e.version + "/"
+	base := "https://www." + e.module + "/blob/" + e.version + "/"
 	if info.IsDir() {
-		base = "https://" + e.module + "/tree/" + e.version + "/"
+		base = "https://www." + e.module + "/tree/" + e.version + "/"
 	}
 	if image {
 		base = "https://raw.githubusercontent.com/" + strings.TrimPrefix(e.module, "github.com/") + "/" + e.version + "/"

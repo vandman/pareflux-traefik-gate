@@ -35,8 +35,9 @@ publie depuis le poste après la réussite des contrôles de la version.
 `scripts/catalog-links` est un utilitaire Go sans dépendance externe, appelé
 automatiquement avant les contrôles existants de compilation et de licences :
 
-- Dans le README uniquement, les documents pointent vers les pages GitHub `blob/<version>/...`.
+- Dans le README uniquement, les documents pointent vers les pages GitHub `blob/<version>/...`. Les liens de navigation utilisent `www.github.com`, qui redirige vers les pages GitHub habituelles et évite que le catalogue transforme les liens `github.com` en téléchargements raw.
 - Les dossiers pointent vers les pages GitHub `tree/<version>/...`.
+- Les racines raw utilisées comme liens de navigation sont converties en pages du dépôt ; les images raw doivent cibler un fichier.
 - Les images utilisent des URL complètes `raw.githubusercontent.com/<auteur>/<dépôt>/<version>/<fichier>`.
 - Les chemins relatifs, liens de langue, références, liens HTML et sommaires sont résolus depuis leur document source.
 - Les liens du dépôt vers `main` ou `master` sont figés sur la version publiée.
