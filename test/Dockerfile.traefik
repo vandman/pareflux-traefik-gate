@@ -5,6 +5,12 @@
 # Called by: test/docker-compose.yml
 # Calls: Traefik local plugin loader
 ###############################################################################
+FROM golang:1.27.3-trixie AS fixture-build
+COPY test/upload-fixture/main.go /src/main.go
+RUN CGO_ENABLED=0 go build -trimpath -o /out/upload-fixture /src/main.go
+
 FROM traefik:v3.7.16
+RUN mkdir -p /run/fixture-dynamic
+COPY --from=fixture-build /out/upload-fixture /usr/local/bin/pareflux-upload-fixture
 
 COPY . /plugins-local/src/github.com/vandman/pareflux-traefik-gate

@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -100,7 +101,8 @@ func (c *Client) New(log *slog.Logger, cacheClient *cache.Client, httpClient *ht
 
 // ServeHTTP Handle captcha html page or validation.
 func (c *Client) ServeHTTP(rw http.ResponseWriter, r *http.Request, remoteIP string) {
-	valid, err := c.Validate(r)
+	r.Body = http.MaxBytesReader(rw, r.Body, 16<<10)
+	valid, err := c.Validate(r, remoteIP)
 	if err != nil {
 		c.log.Info("captcha:ServeHTTP:validate " + err.Error())
 		rw.WriteHeader(http.StatusBadRequest)
@@ -117,6 +119,9 @@ func (c *Client) ServeHTTP(rw http.ResponseWriter, r *http.Request, remoteIP str
 			RawPath:  r.URL.RawPath,
 			RawQuery: r.URL.RawQuery,
 		}).String()
+		if strings.HasPrefix(r.URL.Path, "//") || strings.ContainsAny(r.URL.Path, "\\\r\n") {
+			redirectURL = "/"
+		}
 		http.Redirect(rw, r, redirectURL, http.StatusFound)
 		return
 	}
@@ -148,12 +153,15 @@ type responseProvider struct {
 }
 
 // Validate Verify the captcha from provider API.
-func (c *Client) Validate(r *http.Request) (bool, error) {
+func (c *Client) Validate(r *http.Request, remoteIP string) (bool, error) {
 	if r.Method != http.MethodPost {
 		c.log.Debug("captcha:Validate invalid method: " + r.Method)
 		return false, nil
 	}
-	var response = r.FormValue(c.infoProvider.response)
+	if err := r.ParseForm(); err != nil {
+		return false, err
+	}
+	var response = r.PostForm.Get(c.infoProvider.response)
 	if response == "" {
 		c.log.Debug("captcha:Validate no captcha response found in request")
 		return false, nil
@@ -161,7 +169,13 @@ func (c *Client) Validate(r *http.Request) (bool, error) {
 	var body = url.Values{}
 	body.Add("secret", c.secretKey)
 	body.Add("response", response)
-	res, err := c.httpClient.PostForm(c.infoProvider.validate, body)
+	body.Add("remoteip", remoteIP)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, c.infoProvider.validate, strings.NewReader(body.Encode()))
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	res, err := c.httpClient.Do(req)
 	if err != nil {
 		return false, err
 	}
@@ -175,7 +189,7 @@ func (c *Client) Validate(r *http.Request) (bool, error) {
 		return false, nil
 	}
 	var captchaResponse responseProvider
-	err = json.NewDecoder(res.Body).Decode(&captchaResponse)
+	err = json.NewDecoder(io.LimitReader(res.Body, 64<<10)).Decode(&captchaResponse)
 	if err != nil {
 		return false, err
 	}

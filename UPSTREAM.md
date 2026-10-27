@@ -24,3 +24,5 @@ into this repository.
 - Future PareFlux changes are tracked in this repository.
 - The Apache-2.0 `github.com/maxlerebourg/simpleredis` v1.0.12 client was
   hardened and moved into `pkg/simpleredis` so vendoring remains reproducible.
+
+[Français](UPSTREAM.FR.md)

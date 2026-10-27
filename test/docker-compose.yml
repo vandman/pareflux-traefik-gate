@@ -36,7 +36,11 @@ services:
     command:
       - --api.dashboard=false
       - --ping=true
+      - --providers.file.directory=/run/fixture-dynamic
+      - --providers.file.watch=true
+      - --entrypoints.web.transport.respondingtimeouts.readtimeout=5s
       - --entrypoints.web.address=:80
+      - --entrypoints.web.http.middlewares=pareflux@docker
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
       - --experimental.localplugins.pareflux.modulename=github.com/vandman/pareflux-traefik-gate
@@ -69,6 +73,12 @@ services:
       traefik.http.services.test.loadbalancer.server.port: "80"
       traefik.http.middlewares.pareflux.plugin.pareflux.enabled: "true"
       traefik.http.middlewares.pareflux.plugin.pareflux.logLevel: DEBUG
+      # FR: Identités factices uniquement dans cette pile isolée publiée sur loopback.
+      # EN: Synthetic identities only in this isolated loopback-published stack.
+      traefik.http.middlewares.pareflux.plugin.pareflux.forwardedHeadersCustomName: X-Pareflux-Fixture-Client
+      traefik.http.middlewares.pareflux.plugin.pareflux.forwardedHeadersTrustedIps[0]: 172.16.0.0/12
+      traefik.http.middlewares.pareflux.plugin.pareflux.forwardedHeadersTrustedIps[1]: 192.168.0.0/16
+      traefik.http.middlewares.pareflux.plugin.pareflux.forwardedHeadersTrustedIps[2]: 10.0.0.0/8
       traefik.http.middlewares.pareflux.plugin.pareflux.crowdsecMode: stream
       traefik.http.middlewares.pareflux.plugin.pareflux.crowdsecLapiScheme: http
       traefik.http.middlewares.pareflux.plugin.pareflux.crowdsecLapiHost: crowdsec:8080
@@ -76,6 +86,10 @@ services:
       traefik.http.middlewares.pareflux.plugin.pareflux.crowdsecLapiKey: test-gate-key
       traefik.http.middlewares.pareflux.plugin.pareflux.updateIntervalSeconds: "1"
       traefik.http.middlewares.pareflux.plugin.pareflux.remediationHeadersCustomName: X-Pareflux-Remediation
+      traefik.http.middlewares.pareflux.plugin.pareflux.crowdsecAppsecReadTimeoutSeconds: "5"
+      traefik.http.middlewares.pareflux.plugin.pareflux.crowdsecAppsecBodyExceptions[0].host: pareflux.localhost
+      traefik.http.middlewares.pareflux.plugin.pareflux.crowdsecAppsecBodyExceptions[0].pathRegexp: ^/uploads/
+      traefik.http.middlewares.pareflux.plugin.pareflux.crowdsecAppsecBodyExceptions[0].methods[0]: POST
       traefik.http.middlewares.pareflux.plugin.pareflux.crowdsecAppsecEnabled: "true"
       traefik.http.middlewares.pareflux.plugin.pareflux.crowdsecAppsecScheme: http
       traefik.http.middlewares.pareflux.plugin.pareflux.crowdsecAppsecHost: crowdsec:7422
@@ -84,6 +98,24 @@ services:
       traefik.http.middlewares.pareflux.plugin.pareflux.crowdsecAppsecUnreachableBlock: "true"
     security_opt:
       - no-new-privileges:true
+
+  upload-fixture:
+    image: pareflux-gate-traefik:test
+    pull_policy: never
+    entrypoint: [/usr/local/bin/pareflux-upload-fixture]
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.upload-fixture.entrypoints: web
+      traefik.http.routers.upload-fixture.rule: Host(`pareflux.localhost`) && PathPrefix(`/uploads/`)
+      traefik.http.routers.upload-fixture.priority: "100"
+      traefik.http.routers.upload-fixture.middlewares: pareflux
+      traefik.http.routers.upload-fixture.service: upload-fixture
+      traefik.http.services.upload-fixture.loadbalancer.server.port: "8080"
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      traefik:
+        condition: service_healthy
 
 volumes:
   crowdsec-data:

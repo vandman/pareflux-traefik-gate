@@ -5,7 +5,7 @@
 # EN: Runs Go checks, reproducible vendor regeneration, and license validation
 #     in an environment independent from the active CI runner.
 # Called by: GitLab verify job and public publication fallback
-# Calls: Go toolchain, diff and scripts/check-licenses.sh
+# Calls: Go toolchain, verified cache patch, diff and license checks
 ###############################################################################
 
 FROM golang:1.27.3-trixie
@@ -22,6 +22,7 @@ RUN set -eux; \
     go test -race ./...; \
     go mod tidy; \
     go mod vendor; \
+    ./scripts/patch-ttl-cache-vendor.sh; \
     diff -ru "$baseline/go.mod" go.mod; \
     diff -ru "$baseline/go.sum" go.sum; \
     diff -ru "$baseline/vendor" vendor; \

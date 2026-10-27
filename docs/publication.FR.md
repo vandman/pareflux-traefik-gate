@@ -19,11 +19,13 @@ Cliquer sur un lien vers un autre document quitte le catalogue.
 Commiter les sources validées et choisir un numéro stable encore inutilisé.
 Le tag GitLab principal est `publish/vX.Y.Z` ; le tag GitHub public est `vX.Y.Z`.
 Les tags existants sont immuables. GitLab est la source de référence et sa CI
-est le seul chemin de publication vers GitHub. Après les vérifications locales :
+est le seul chemin de publication vers GitHub. Pousser la branche relue, puis
+étiqueter ce même commit validé, sans contourner la protection des branches.
+Après les vérifications locales :
 
 ```bash
 PUBLISH_DRY_RUN=1 PAREFLUX_GITHUB_REPOSITORY=https://github.com/vandman/pareflux-traefik-gate.git ./scripts/publish-github.sh vX.Y.Z
-git push origin HEAD:main
+git push origin HEAD
 git tag -a publish/vX.Y.Z -m "PareFlux Gate vX.Y.Z"
 git push origin refs/tags/publish/vX.Y.Z
 ```
@@ -40,6 +42,21 @@ L'export isolé utilise `.local/publication-work`, ignoré par Git, et est suppr
 à la fin. Git, Bash et Go ou Docker sont nécessaires. La simulation locale
 ne publie rien. Aucun tag existant ne doit être déplacé ou republié.
 
+## Cohérence des versions
+
+Le `pluginVersion` source est la version préparée, pas la preuve que son tag
+public GitHub existe. Vérifier les tags publics avant de proposer son installation.
+La CI de développement exécute `go run -mod=vendor ./scripts/release-examples`
+sans écrire : les guides et l’épingle Compose doivent correspondre à `version.go`.
+
+Après export et adaptation de `version.go`, la publication exécute
+`scripts/release-examples --version vX.Y.Z --write`, puis vérifie à nouveau.
+Elle actualise cinq épingles : version introductive et YAML de chaque guide,
+et version du plugin dans Compose. Une épingle absente ou dupliquée bloque la
+publication. Les versions Traefik, CrowdSec, Redis et des dépendances sont
+préservées. Ces changements ne concernent que l’export ; aucun commit CI
+n’est renvoyé vers GitLab.
+
 ## Préparation des liens
 
 `scripts/catalog-links` est un utilitaire Go sans dépendance externe, appelé
@@ -52,8 +69,8 @@ automatiquement avant les contrôles existants de compilation et de licences :
 - Les chemins relatifs, liens de langue, références, liens HTML et sommaires sont résolus depuis leur document source.
 - Les liens du dépôt vers `main` ou `master` sont figés sur la version publiée.
 - Une cible locale absente, un titre Markdown introuvable, un chemin sortant du dépôt ou une URL raw incomplète bloque la publication.
-- Les exemples, le code en ligne et les liens vers les sections du README sont conservés.
-- Aucun autre fichier documentaire n’est réécrit.
+- La préparation des liens conserve les exemples, le code en ligne et les liens de sections du README ; l’étape distincte de version actualise volontairement les épingles du plugin.
+- La réécriture des liens ne concerne que le README du catalogue. L’étape distincte de version actualise aussi le guide français et l’exemple Compose.
 - Les sites externes et le lien du dépôt GitLab de développement sont conservés ; leur disponibilité n’est pas vérifiée comme celle d’un fichier local.
 
 La racine d’un dépôt sur le domaine raw n’est pas une URL de téléchargement

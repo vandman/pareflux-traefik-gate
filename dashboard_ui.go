@@ -26,6 +26,8 @@ type gateContextKey struct{}
 type gateRequestProof struct {
 	gate            *Bouncer
 	appsecConfirmed bool
+	appsecPartial   bool
+	replay          *replayBody
 }
 
 // dashboardStatus contains only public display facts, never security keys or addresses.
@@ -33,11 +35,15 @@ type gateRequestProof struct {
 // EN: Labels and public URLs are bounded and escaped before display.
 // Called by: native dashboard endpoint and bootstrap; Calls: none.
 type dashboardStatus struct {
-	URL       string   `json:"url"`
-	Connected bool     `json:"connected"`
-	Protected bool     `json:"protected"`
-	Labels    []string `json:"labels"`
-	Warning   string   `json:"warning"`
+	SkippedDecisions uint64   `json:"skipped_decisions"`
+	DecisionsSynced  bool     `json:"decisions_synced"`
+	AppsecEnabled    bool     `json:"appsec_enabled"`
+	AppsecInspected  bool     `json:"appsec_inspected"`
+	URL              string   `json:"url"`
+	Connected        bool     `json:"connected"`
+	Protected        bool     `json:"protected"`
+	Labels           []string `json:"labels"`
+	Warning          string   `json:"warning"`
 }
 
 // status checks the console and actual request protection independently.
@@ -47,8 +53,9 @@ type dashboardStatus struct {
 func (m *dashboardMenu) status(r *http.Request) dashboardStatus {
 	value := dashboardStatus{URL: m.link, Connected: true, Labels: dashboardLabels(r.Header.Get("Accept-Language")), Warning: dashboardWarning(r.Header.Get("Accept-Language"))}
 	if m.registration != nil {
+		value.URL = ""
 		m.registration.mu.Lock()
-		if m.registration.link != "" {
+		if m.registration.link != "" && time.Now().Before(m.registration.expires) {
 			value.URL = m.registration.link
 		}
 		m.registration.mu.Unlock()
@@ -59,24 +66,33 @@ func (m *dashboardMenu) status(r *http.Request) dashboardStatus {
 		return value
 	}
 	gate := proof.gate
+	if gate.engine == nil {
+		return value
+	}
+	if gate.engine.decisions != nil {
+		value.SkippedDecisions = gate.engine.decisions.skippedCount()
+	}
 	engine := false
 	switch gate.crowdsecMode {
 	case configuration.StreamMode, configuration.AloneMode:
-		age := time.Now().Unix() - atomic.LoadInt64(&lastStreamSuccess)
+		age := time.Now().Unix() - atomic.LoadInt64(&gate.engine.lastStreamSuccess)
 		limit := gate.updateInterval * 3
 		if limit < 30 {
 			limit = 30
 		}
-		engine = crowdsecStreamIsHealthy() && atomic.LoadInt64(&lastStreamSuccess) > 0 && age <= limit
+		engine = atomic.LoadInt64(&gate.engine.updateFailure) == 0 && crowdsecStreamIsHealthy(gate) && atomic.LoadInt64(&gate.engine.lastStreamSuccess) > 0 && age <= limit
 	case configuration.LiveMode:
 		limit := gate.defaultDecisionTimeout
 		if limit < 30 {
 			limit = 30
 		}
-		engine = atomic.LoadInt64(&lastLiveSuccess) > 0 && time.Now().Unix()-atomic.LoadInt64(&lastLiveSuccess) <= limit
+		engine = atomic.LoadInt64(&gate.engine.lastLiveSuccess) > 0 && time.Now().Unix()-atomic.LoadInt64(&gate.engine.lastLiveSuccess) <= limit
 	case configuration.AppsecMode, configuration.NoneMode:
 		engine = gate.appsecEnabled && proof.appsecConfirmed
 	}
+	value.DecisionsSynced = engine && gate.crowdsecMode != configuration.AppsecMode
+	value.AppsecEnabled = gate.appsecEnabled
+	value.AppsecInspected = proof.appsecConfirmed
 	value.Protected = engine && (!gate.appsecEnabled || proof.appsecConfirmed)
 	return value
 }
@@ -121,14 +137,15 @@ func dashboardBootstrap(status dashboardStatus) string {
 const setText=(e,value)=>{if(e.textContent!==value)e.textContent=value;};
 const fallback=()=>document.getElementById('pareflux-dashboard-menu');
 function render(){scheduled=false;const root=document.getElementById('root');if(!root)return;
+ if(!state.url){document.getElementById('pareflux-plugin-link')?.remove();document.getElementById('pareflux-feature')?.remove();return;}
  const catalog=[...root.querySelectorAll('a')].find(a=>a.textContent.trim()==='Plugins');
  if(catalog){const parent=catalog.parentElement;let heading=document.getElementById('pareflux-plugin-heading');if(!heading){const http=root.querySelector('a[href$="/http/routers"]');const template=http?.parentElement.querySelector('span');heading=template?template.cloneNode(false):document.createElement('span');heading.id='pareflux-plugin-heading';heading.textContent='PLUGINS';parent.insertBefore(heading,catalog);}
  let link=document.getElementById('pareflux-plugin-link');if(!link){link=catalog.cloneNode(true);link.id='pareflux-plugin-link';link.removeAttribute('target');link.removeAttribute('rel');const label=link.lastElementChild;if(label)label.textContent='PareFlux';else link.textContent='PareFlux';parent.append(link);}
  if(link.getAttribute('href')!==state.url)link.setAttribute('href',state.url);link.title=state.connected?'PareFlux':state.warning;link.dataset.state=state.connected?'available':'unavailable';if(link.lastElementChild)setText(link.lastElementChild,state.connected?'PareFlux':'PareFlux ⚠');if(fallback())fallback().style.display='none';
  }else if(fallback())fallback().style.display='';
  const heading=[...root.querySelectorAll('h1,h2,h3,h4')].find(h=>h.textContent.trim()==='Features');const grid=heading?.parentElement.nextElementSibling;
- if(grid?.firstElementChild){let card=document.getElementById('pareflux-feature');if(!card){const template=grid.firstElementChild;card=template.cloneNode(false);card.id='pareflux-feature';const inner=template.firstElementChild?.cloneNode(false)||document.createElement('div');inner.style.minHeight='120px';const title=template.querySelector('span')?.cloneNode(false)||document.createElement('span');title.textContent='PareFlux / CrowdSec';title.style.cssText='font-size:12px;letter-spacing:1px;white-space:nowrap';inner.append(title);const badges=document.createElement('div');badges.style.cssText='display:flex;flex-direction:column;align-items:center;gap:6px';for(const kind of ['connected','protected']){const badge=document.createElement('span');badge.id='pareflux-feature-'+kind;badge.style.cssText='padding:5px 12px;border-radius:4px;font:600 14px system-ui';badges.append(badge);}inner.append(badges);card.append(inner);grid.append(card);}
- card.dataset.state=state.connected&&state.protected?'healthy':'degraded';const connected=document.getElementById('pareflux-feature-connected'),protectedBadge=document.getElementById('pareflux-feature-protected');for(const [badge,ok,label]of [[connected,state.connected,state.labels[state.connected?0:1]],[protectedBadge,state.protected,state.labels[state.protected?2:3]]]){setText(badge,label);badge.dataset.state=ok?'healthy':'degraded';badge.style.backgroundColor=ok?'#145b3a':'#7d2039';badge.style.color=ok?'#c1f9d4':'#ffe5ed';badge.title=ok?label:state.connected?'CrowdSec — '+state.labels[3]:state.warning;}
+ if(grid?.firstElementChild){let card=document.getElementById('pareflux-feature');if(!card){const template=grid.firstElementChild;card=template.cloneNode(false);card.id='pareflux-feature';const inner=template.firstElementChild?.cloneNode(false)||document.createElement('div');inner.style.minHeight='120px';const title=template.querySelector('span')?.cloneNode(false)||document.createElement('span');title.textContent='PareFlux / CrowdSec';title.style.cssText='font-size:12px;letter-spacing:1px;white-space:nowrap';inner.append(title);const badges=document.createElement('div');badges.style.cssText='display:flex;flex-direction:column;align-items:center;gap:6px';for(const kind of ['connected','decisions','appsec']){const badge=document.createElement('span');badge.id='pareflux-feature-'+kind;badge.style.cssText='padding:5px 12px;border-radius:4px;font:600 14px system-ui';badges.append(badge);}inner.append(badges);card.append(inner);grid.append(card);}
+ card.dataset.state=state.connected&&state.protected?'healthy':'degraded';const connected=document.getElementById('pareflux-feature-connected'),decisionBadge=document.getElementById('pareflux-feature-decisions'),appsecBadge=document.getElementById('pareflux-feature-appsec');for(const [badge,ok,label]of [[connected,state.connected,'Control · '+state.labels[state.connected?0:1]],[decisionBadge,state.decisions_synced,'CrowdSec · '+state.labels[state.decisions_synced?2:3]],[appsecBadge,state.appsec_inspected,'AppSec · '+(state.appsec_enabled?state.labels[state.appsec_inspected?2:3]:'—')]]){setText(badge,label);badge.dataset.state=ok?'healthy':'degraded';badge.style.backgroundColor=ok?'#145b3a':'#7d2039';badge.style.color=ok?'#c1f9d4':'#ffe5ed';badge.title=ok?label:state.connected?'CrowdSec — '+state.labels[3]:state.warning;}
  }
 }
 const schedule=()=>{if(!scheduled){scheduled=true;requestAnimationFrame(render);}};new MutationObserver(schedule).observe(document.getElementById('root')||document.body,{childList:true,subtree:true});schedule();

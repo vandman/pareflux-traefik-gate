@@ -1,163 +1,80 @@
-<!--
-FR: Décrit les composants et décisions du middleware sans alourdir le guide d’installation.
-EN: Describes middleware components and decisions separately from the installation guide.
-Called by: README and LISEZMOI; Calls: Mermaid diagrams.
--->
+<!-- FR: Décrit les composants actuels de protection. EN: Describes current protection components. Called by: installation guide; Calls: runtime reference. -->
 # PareFlux Gate architecture
 
-This document describes request handling, network connections, caching and failure policies. GitHub renders the Mermaid diagrams.
+[Installation](../README.md) · [Français](architecture.FR.md)
 
-[Back to installation](../README.md) · [Français](architecture.FR.md)
+Gate runs inside Traefik. CrowdSec is a separate, required service: its local
+API (LAPI) supplies blocking instructions. CrowdSec AppSec optionally examines
+requests. The PareFlux Control console is optional and does not relay protection
+calls.
 
-## Architecture
+## Components and connections
 
 ```mermaid
 flowchart TB
-    client["HTTP client"]
-
-    subgraph process["Traefik process"]
-        entrypoint["Entrypoint and router"]
-
-        subgraph gate["PareFlux Gate middleware"]
-            identity["Source identity resolver"]
-            policy["Decision and failure policy"]
-            cache["PareFlux TTL Cache"]
-            appsecclient["AppSec client"]
-            marker["Remediation marker"]
-        end
-
-        service["Traefik service handler"]
+    client["Visitor"] --> gate
+    subgraph traefik["Traefik"]
+        gate["PareFlux Gate"]
+        store["stream/alone IP and range decisions"]
+        ttl["Temporary live/captcha cache"]
+        gate <--> store
+        gate <--> ttl
     end
-
-    lapi["CrowdSec LAPI<br/>decision stream"]
-    appsec["CrowdSec AppSec<br/>HTTP inspection"]
-    backend["Protected backend"]
-    accesslog["Traefik JSON access log"]
-
-    client --> entrypoint --> identity --> policy
-    policy <--> cache
-    policy <--> lapi
-    policy --> appsecclient <--> appsec
-    policy --> marker
-    policy --> service --> backend
-    entrypoint --> accesslog
+    lapi["CrowdSec LAPI :8080"] -->|"Stream synchronization"| store
+    gate <-->|"live / none"| lapi
+    gate <-->|"Optional inspection"| appsec["CrowdSec AppSec :7422"]
+    gate --> backend["Protected application"]
+    ttl <-.-> redis["Redis — optional"]
+    control["PareFlux Control — optional console"] -.-> lapi
 ```
 
-## Network flow
+`alone` fills the same decision store from the CrowdSec Central API rather than
+LAPI. It requires credentials and feed access and does not contain local bans.
+Traefik must reach LAPI, AppSec and optional Redis over a private network; do not
+publish their ports on the Internet. Gate uses a dedicated key mounted read-only
+inside Traefik. Gate has no separate process or listening port.
 
-```mermaid
-flowchart LR
-    internet["Client network"]
+## Engines and storage
 
-    subgraph traefikcontainer["Traefik container"]
-        tls["Traefik entrypoints<br/>:80, :443, optional :8448"]
-        gate["Gate runs in-process<br/>no listening port"]
-    end
+Routes with identical resolved CrowdSec engine options share an engine, its
+synchronization workers and its cache. A different address, rotated key or
+changed certificate creates a separate engine. Initial synchronization precedes
+healthy status; releasing the last configuration context stops its workers.
 
-    subgraph front["Internal front network"]
-        lapi["CrowdSec LAPI :8080"]
-        appsec["CrowdSec AppSec :7422"]
-        backend["Application service port"]
-    end
+The stream/alone store indexes decisions by ID and IPv4/IPv6 prefix. It never
+evicts an active ban to make room. The local TTL cache or Redis holds temporary
+live lookup and captcha results; it cannot remove stream bans. Persistent
+decisions remain in CrowdSec’s database, not Gate. After a restart, Gate reloads
+them.
 
-    secret["Read-only LAPI key file"]
-    log["Persisted access.log"]
+## Request handling
 
-    internet --> tls --> gate
-    gate -->|"decision stream"| lapi
-    gate -->|"inspection request"| appsec
-    gate -->|"allowed request through Traefik"| backend
-    secret --> gate
-    tls --> log
-```
+1. Traefik calls Gate when attached to the router or entrypoint.
+2. Gate uses the network peer IP; forwarded identity is accepted only from an
+   explicitly trusted proxy. A client exempted by `clientTrustedIps` bypasses
+   every check.
+3. `stream`/`alone` look up the IP and matching ranges in their decision store.
+   `live` checks its cache then LAPI on a miss; `none` queries LAPI every time.
+   `appsec` does not consult IP decisions.
+4. A ban takes precedence over captcha, including overlapping ranges.
+   Synchronization errors follow the configured failure policy.
+5. When enabled, AppSec receives metadata and the bounded body, excluding cookies
+   and `Authorization`. Bodyless requests are still inspected.
+6. If permitted, Traefik forwards the request to the application.
 
-The client never connects to Gate, LAPI, or AppSec directly. The only public
-listener is a Traefik entrypoint. The trusted forwarded-header ranges determine
-when Gate may derive a client identity from a proxy header instead of the
-network peer.
+## Failures and limits
 
-## Application flow
+Stream polls request full snapshots: this avoids losing changes during reloads
+but transfers more data than incremental updates. The default interval is
+60 seconds; shorter intervals increase CrowdSec and Traefik work.
 
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant T as Traefik router
-    participant G as PareFlux Gate
-    participant K as TTL cache
-    participant L as CrowdSec LAPI
-    participant W as CrowdSec AppSec
-    participant A as Application
+Unexpired known bans remain enforced during an outage. Unknown clients are
+refused after the failure threshold and grace by default. Actual store overflow
+refuses them immediately. AppSec has a separate policy; inspection timeouts do
+not receive outage grace.
 
-    L-->>G: Periodic decision stream update
-    G->>K: Insert or delete expiring decisions
-    C->>T: HTTP request
-    T->>G: Middleware invocation
-    G->>G: Resolve trusted client identity
-    G->>K: Look up decision
-    alt Cached ban or captcha
-        K-->>G: Remediation
-        G-->>C: Configured status and remediation marker
-    else No cached remediation
-        G->>W: Method, URI, host, headers, IP, eligible body
-        alt AppSec rejects
-            W-->>G: Blocking status
-            G-->>C: Configured status and remediation marker
-        else AppSec allows or configured fail-open applies
-            W-->>G: Allow
-            G->>A: Invoke next Traefik handler
-            A-->>C: Application response
-        end
-    end
-```
-
-## Ban decision flow
-
-```mermaid
-flowchart TD
-    request["Traefik invokes Gate"]
-    enabled{"Gate enabled?"}
-    identity["Resolve network peer or trusted forwarded identity"]
-    identityok{"Identity valid?"}
-    trusted{"Client IP explicitly trusted?"}
-    mode{"Decision mode uses CrowdSec?"}
-    lookup["Look up IP in TTL or Redis cache"]
-    cached{"Cached value?"}
-    remediation["Return ban or captcha remediation<br/>and internal marker"]
-    stream{"Stream mode healthy?"}
-    closed{"Explicit stream fail-closed enabled?"}
-    technical["Return technical rejection"]
-    appsec{"AppSec enabled?"}
-    inspect["Send request metadata and eligible body to AppSec"]
-    wafresult{"AppSec result?"}
-    wafpolicy{"Failure policy blocks this error?"}
-    next["Invoke the next Traefik handler"]
-
-    request --> enabled
-    enabled -->|No| next
-    enabled -->|Yes| identity --> identityok
-    identityok -->|No| technical
-    identityok -->|Yes| trusted
-    trusted -->|Yes| next
-    trusted -->|No| mode
-    mode -->|No or AppSec-only| appsec
-    mode -->|Yes| lookup --> cached
-    cached -->|Ban or captcha| remediation
-    cached -->|Explicit allow| appsec
-    cached -->|Miss| stream
-    stream -->|Healthy or non-stream mode| appsec
-    stream -->|Unhealthy| closed
-    closed -->|Yes| technical
-    closed -->|No, explicitly configured| appsec
-    appsec -->|No| next
-    appsec -->|Yes| inspect --> wafresult
-    wafresult -->|Allow| next
-    wafresult -->|Block| remediation
-    wafresult -->|Unavailable or internal error| wafpolicy
-    wafpolicy -->|Block| technical
-    wafpolicy -->|Fail open| next
-```
-
-Cached bans remain effective during a LAPI outage. On a cache miss the stream
-policy fails closed by default; `crowdsecStreamUnreachableBlock: false` is the
-explicit fail-open switch. AppSec availability and internal-error policies are
-configured independently.
+See [precise limits and policies](security-runtime.EN.md), the
+[option reference](configuration.EN.md) and
+[optional dashboard navigation](dashboard-menu.EN.md). Traefik logs can feed
+CrowdSec detection after acquisition is configured; distinguish already blocked
+responses using the remediation marker to avoid a detection loop.

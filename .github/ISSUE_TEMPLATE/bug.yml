@@ -29,8 +29,8 @@ body:
     id: pareflux-version
     attributes:
       label: PareFlux Gate version
-      description: Use the immutable release tag, for example v0.1.8.
-      placeholder: v0.1.8
+      description: Use the immutable release tag, as shown in the public GitHub releases.
+      placeholder: Latest published tag, for example vX.Y.Z
     validations:
       required: true
 

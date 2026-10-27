@@ -22,7 +22,7 @@ body:
     id: pareflux-version
     attributes:
       label: PareFlux Gate version
-      placeholder: v0.1.8
+      placeholder: Latest published tag, for example vX.Y.Z
     validations:
       required: true
 

@@ -1,0 +1,7 @@
+{
+  "module": "gitlab.nikolov.fr/application/pareflux-ttl-cache",
+  "version": "v0.1.3",
+  "file": "vendor/gitlab.nikolov.fr/application/pareflux-ttl-cache/cache.go",
+  "upstream_sha256": "0c3fd95595c881e5650cc917388bdbdfbe8bd0c653e4f1fd0bb25fbba250a350",
+  "patched_sha256": "b87675b9263ef3a48fe5666ac7e24a62dd43ad120642ffa4d8fc9c8ce51fdcd3"
+}

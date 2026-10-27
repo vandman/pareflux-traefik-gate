@@ -1,0 +1,38 @@
+###############################################################################
+# PareFlux Gate Redis demonstration
+# FR: Partage les résultats live et captcha dans Redis, sans exposer son port.
+# EN: Shares live and captcha results in Redis without publishing its port.
+# Called by: README and LISEZMOI Compose examples
+# Calls: Redis and the existing Traefik service
+###############################################################################
+services:
+  redis:
+    image: redis:8.10.3-alpine
+    command:
+      - sh
+      - -ec
+      - 'exec redis-server --save "" --appendonly no --maxmemory 64mb --maxmemory-policy allkeys-lru --requirepass "$$(cat /run/secrets/redis-password)"'
+    secrets:
+      - redis-password
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$$(cat /run/secrets/redis-password)" redis-cli ping | grep -q PONG']
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    security_opt:
+      - no-new-privileges:true
+  traefik:
+    secrets:
+      - redis-password
+    depends_on:
+      redis:
+        condition: service_healthy
+  whoami:
+    labels:
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecMode: live
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.redisCacheEnabled: "true"
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.redisCacheHost: redis:6379
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.redisCachePasswordFile: /run/secrets/redis-password
+secrets:
+  redis-password:
+    file: ./redis-demo-password.txt

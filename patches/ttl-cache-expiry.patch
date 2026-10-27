@@ -1,0 +1,28 @@
+--- a/vendor/gitlab.nikolov.fr/application/pareflux-ttl-cache/cache.go
++++ b/vendor/gitlab.nikolov.fr/application/pareflux-ttl-cache/cache.go
+@@ -336,7 +336,7 @@
+-// FR: Retire l'entrée la plus ancienne via la tête de file lorsque l'appelant
+-//
+-//	détient le verrou d'écriture, sans parcourir le cache.
+-//
+-// EN: Removes the oldest entry from the queue head while the caller owns the
+-//
+-//	write lock, without scanning the cache.
++// FR: Cherche une entrée expirée parmi 64 positions avant d'évincer la plus ancienne.
++//
++//	La borne protège les insertions contre un balayage complet coûteux.
++//
++// EN: Looks for an expired entry within 64 positions before evicting the oldest.
++//
++//	The bound prevents costly full-cache scans on insertion.
+@@ -351,0 +352,10 @@
++	now := c.nowUnixNano()
++	candidate := oldest
++	for inspected := 0; candidate != nil && inspected < 64; inspected++ {
++		key, valid := candidate.Value.(string)
++		if item, present := c.items[key]; valid && present && item.expiresAt >= 0 && item.expiresAt <= now {
++			oldest = candidate
++			break
++		}
++		candidate = candidate.Next()
++	}

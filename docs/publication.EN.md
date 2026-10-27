@@ -18,11 +18,12 @@ GitHub and retain their relative links. Links to other documents leave the catal
 Commit the validated source and use an unused stable version tag. The primary
 GitLab release tag is `publish/vX.Y.Z`; the public GitHub tag is `vX.Y.Z`.
 Existing tags are immutable. GitLab is the source of truth and its CI is the
-only publication path to GitHub. After local verification:
+only publication path to GitHub. Push the reviewed source branch, then tag that same validated commit. Adapt the
+branch workflow to the repository; do not bypass branch protection. After local verification:
 
 ```bash
 PUBLISH_DRY_RUN=1 PAREFLUX_GITHUB_REPOSITORY=https://github.com/vandman/pareflux-traefik-gate.git ./scripts/publish-github.sh vX.Y.Z
-git push origin HEAD:main
+git push origin HEAD
 git tag -a publish/vX.Y.Z -m "PareFlux Gate vX.Y.Z"
 git push origin refs/tags/publish/vX.Y.Z
 ```
@@ -39,6 +40,20 @@ The isolated export uses Git-ignored `.local/publication-work` and is removed
 on exit. Git, Bash and Go or Docker are required. Local dry runs do not publish.
 Never move or republish an existing tag.
 
+## Version consistency
+
+The source `pluginVersion` is the version being prepared, not proof that its
+public GitHub tag exists. Check public tags before asking users to install it.
+Development CI runs `go run -mod=vendor ./scripts/release-examples` without
+writing: both guides and the Compose plugin pin must match `version.go`.
+
+After exporting and setting `version.go` to the release version, the publisher
+runs `scripts/release-examples --version vX.Y.Z --write`, then checks it again.
+It updates five pins: the introductory version and YAML version in each guide,
+and the Compose plugin version. Missing or duplicate pins stop publication.
+Traefik, CrowdSec, Redis and dependency versions are preserved. These version
+changes occur only in the export; no CI commit is pushed back to GitLab.
+
 ## Link preparation
 
 `scripts/catalog-links` is a standard-library Go utility invoked automatically
@@ -51,8 +66,8 @@ by the publisher, before its existing compilation and license checks:
 - Relative paths, language links, references, HTML links and contents links are resolved from their source document.
 - Repository links pointing at `main` or `master` are pinned to the release.
 - Missing local targets, missing Markdown headings, paths outside the repository and incomplete raw URLs stop publication.
-- Code examples, inline code and links to sections within the README are preserved.
-- No other documentation file is rewritten.
+- Link preparation preserves code examples, inline code and README section links; the separate version step intentionally updates plugin pins in examples.
+- Link rewriting affects only the catalog README. The separate version step also updates the French guide and Compose example.
 - External websites and the GitLab development-repository link remain unchanged; their availability is not a local-file check.
 
 A raw repository root is not a usable download URL. Use the GitHub repository

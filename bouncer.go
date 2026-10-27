@@ -20,7 +20,9 @@ package pareflux_traefik_gate //nolint:revive,stylecheck
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,7 +33,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"text/template"
 	"time"
@@ -65,38 +66,6 @@ const (
 	maxIdlePerHost           = 20
 )
 
-// ##############################################################
-// Important: traefik creates an instance of the bouncer per route.
-// We rely on globals (both here and in the memory cache) to share info between
-// routes. This means that some of the plugins parameters will only work "once"
-// and will take the values of the first middleware that was instantiated even
-// if you have different middlewares with different parameters. This design
-// makes it impossible to have multiple crowdsec implementations per cluster (unless you have multiple traefik deployments in it)
-// - updateInterval
-// - updateMaxFailure
-// - defaultDecisionTimeout
-// - redisUnreachableBlock
-// - appsecEnabled
-// - appsecHost
-// - metricsUpdateIntervalSeconds
-// - others...
-// ###################################
-
-//nolint:gochecknoglobals
-var (
-	lastStreamSuccess       int64
-	lastLiveSuccess         int64
-	isStartup               uint32 = 1
-	isCrowdsecStreamHealthy uint32 = 1
-	updateFailure           int64
-	streamTicker            chan bool
-	metricsTicker           chan bool
-	lastMetricsPush         time.Time
-	blockedRequests         int64
-	tickerMutex             sync.Mutex
-	metricsMutex            sync.Mutex
-)
-
 // CreateConfig creates the default plugin configuration.
 func CreateConfig() *configuration.Config {
 	return configuration.New()
@@ -104,9 +73,17 @@ func CreateConfig() *configuration.Config {
 
 // Bouncer a Bouncer struct.
 type Bouncer struct {
-	next     http.Handler
-	name     string
-	template *template.Template
+	appsecBodyExceptions         []compiledBodyException
+	policyKey                    string
+	appsecBodyLimitAction        string
+	appsecTimeout                time.Duration
+	appsecReadTimeout            time.Duration
+	appsecMaxConcurrentPerClient int
+	engine                       *engineState
+	failureGraceSeconds          int64
+	next                         http.Handler
+	name                         string
+	template                     *template.Template
 
 	enabled                 bool
 	appsecEnabled           bool
@@ -162,13 +139,26 @@ type Bouncer struct {
 // /////////////////////////////////////////////////////////////////////////////
 //
 //nolint:gocyclo
-func New(_ context.Context, next http.Handler, config *configuration.Config, name string) (http.Handler, error) {
+func New(ctx context.Context, next http.Handler, config *configuration.Config, name string) (http.Handler, error) {
 	if config.DashboardIntegration || config.DashboardLinkURL != "" {
 		if config.Enabled {
 			return nil, errors.New("dashboard links require a dedicated middleware instance with enabled=false")
 		}
 		if config.DashboardIntegration {
-			return newDashboardIntegration(next, config.DashboardHost, config.DashboardLinkURL, config.DashboardHealthURL)
+			key, err := configuration.GetVariable(config, "DashboardDiscoveryKey")
+			if err != nil {
+				return nil, err
+			}
+			handler, menuErr := newDashboardIntegration(next, config.DashboardHost, config.DashboardLinkURL, config.DashboardHealthURL, key, config.DashboardRegistrationAllowed)
+			if menuErr != nil {
+				return nil, menuErr
+			}
+			fingerprint, fingerprintErr := engineFingerprint(config)
+			if fingerprintErr != nil {
+				return nil, fingerprintErr
+			}
+			handler.(*dashboardMenu).engineKey = fingerprint
+			return handler, nil
 		}
 		return newDashboardMenu(next, config.DashboardHost, config.DashboardLinkURL)
 	}
@@ -240,7 +230,11 @@ func New(_ context.Context, next http.Handler, config *configuration.Config, nam
 
 	var banTemplate *htmltemplate.Template
 	if config.BanHTMLFilePath != "" {
-		banTemplate, _ = configuration.GetHTMLTemplate(config.BanHTMLFilePath)
+		var templateErr error
+		banTemplate, templateErr = configuration.GetHTMLTemplate(config.BanHTMLFilePath)
+		if templateErr != nil {
+			return nil, fmt.Errorf("invalid ban template: %w", templateErr)
+		}
 	}
 	appsecTimeoutSeconds := config.CrowdsecAppsecTimeoutSeconds
 	if appsecTimeoutSeconds == 0 {
@@ -252,37 +246,42 @@ func New(_ context.Context, next http.Handler, config *configuration.Config, nam
 		name:     name,
 		template: template.New("PareFluxGate").Delims("[[", "]]"),
 
-		enabled:                 config.Enabled,
-		crowdsecMode:            config.CrowdsecMode,
-		appsecEnabled:           config.CrowdsecAppsecEnabled,
-		appsecScheme:            config.CrowdsecAppsecScheme,
-		appsecHost:              config.CrowdsecAppsecHost,
-		appsecPath:              config.CrowdsecAppsecPath,
-		appsecKey:               config.CrowdsecAppsecKey,
-		appsecFailureBlock:      config.CrowdsecAppsecFailureBlock,
-		appsecUnreachableBlock:  config.CrowdsecAppsecUnreachableBlock,
-		appsecBodyLimit:         config.CrowdsecAppsecBodyLimit,
-		appsecBodyExcludedTypes: config.CrowdsecAppsecBodyExcludedContentTypes,
-		crowdsecScheme:          config.CrowdsecLapiScheme,
-		crowdsecHost:            config.CrowdsecLapiHost,
-		crowdsecPath:            config.CrowdsecLapiPath,
-		crowdsecKey:             config.CrowdsecLapiKey,
-		crowdsecMachineID:       config.CrowdsecCapiMachineID,
-		crowdsecPassword:        config.CrowdsecCapiPassword,
-		crowdsecScenarios:       config.CrowdsecCapiScenarios,
-		streamUnreachableBlock:  config.CrowdsecStreamUnreachableBlock,
-		updateInterval:          config.UpdateIntervalSeconds,
-		updateMaxFailure:        config.UpdateMaxFailure,
-		remediationCustomHeader: config.RemediationHeadersCustomName,
-		forwardedCustomHeader:   config.ForwardedHeadersCustomName,
-		defaultDecisionTimeout:  config.DefaultDecisionSeconds,
-		remediationStatusCode:   config.RemediationStatusCode,
-		redisUnreachableBlock:   config.RedisCacheUnreachableBlock,
-		banTemplate:             banTemplate,
-		traceCustomHeader:       config.TraceHeadersCustomName,
-		crowdsecStreamRoute:     crowdsecStreamRoute,
-		crowdsecHeader:          crowdsecHeader,
-		log:                     log,
+		enabled:                      config.Enabled,
+		failureGraceSeconds:          config.FailureGraceSeconds,
+		crowdsecMode:                 config.CrowdsecMode,
+		appsecEnabled:                config.CrowdsecAppsecEnabled,
+		appsecBodyLimitAction:        config.CrowdsecAppsecBodyLimitAction,
+		appsecTimeout:                time.Duration(appsecTimeoutSeconds) * time.Second,
+		appsecReadTimeout:            time.Duration(config.CrowdsecAppsecReadTimeoutSeconds) * time.Second,
+		appsecMaxConcurrentPerClient: int(config.CrowdsecAppsecMaxConcurrentPerClient),
+		appsecScheme:                 config.CrowdsecAppsecScheme,
+		appsecHost:                   config.CrowdsecAppsecHost,
+		appsecPath:                   config.CrowdsecAppsecPath,
+		appsecKey:                    config.CrowdsecAppsecKey,
+		appsecFailureBlock:           config.CrowdsecAppsecFailureBlock,
+		appsecUnreachableBlock:       config.CrowdsecAppsecUnreachableBlock,
+		appsecBodyLimit:              config.CrowdsecAppsecBodyLimit,
+		appsecBodyExcludedTypes:      config.CrowdsecAppsecBodyExcludedContentTypes,
+		crowdsecScheme:               config.CrowdsecLapiScheme,
+		crowdsecHost:                 config.CrowdsecLapiHost,
+		crowdsecPath:                 config.CrowdsecLapiPath,
+		crowdsecKey:                  config.CrowdsecLapiKey,
+		crowdsecMachineID:            config.CrowdsecCapiMachineID,
+		crowdsecPassword:             config.CrowdsecCapiPassword,
+		crowdsecScenarios:            config.CrowdsecCapiScenarios,
+		streamUnreachableBlock:       config.CrowdsecStreamUnreachableBlock,
+		updateInterval:               config.UpdateIntervalSeconds,
+		updateMaxFailure:             config.UpdateMaxFailure,
+		remediationCustomHeader:      config.RemediationHeadersCustomName,
+		forwardedCustomHeader:        config.ForwardedHeadersCustomName,
+		defaultDecisionTimeout:       config.DefaultDecisionSeconds,
+		remediationStatusCode:        config.RemediationStatusCode,
+		redisUnreachableBlock:        config.RedisCacheUnreachableBlock,
+		banTemplate:                  banTemplate,
+		traceCustomHeader:            config.TraceHeadersCustomName,
+		crowdsecStreamRoute:          crowdsecStreamRoute,
+		crowdsecHeader:               crowdsecHeader,
+		log:                          log,
 		serverPoolStrategy: &ip.PoolStrategy{
 			Checker: serverChecker,
 		},
@@ -310,9 +309,7 @@ func New(_ context.Context, next http.Handler, config *configuration.Config, nam
 		cacheClient:   &cache.Client{},
 		captchaClient: &captcha.Client{},
 	}
-	if config.CrowdsecMode == configuration.AppsecMode {
-		return bouncer, nil
-	}
+
 	config.RedisCachePassword, _ = configuration.GetVariable(config, "RedisCachePassword")
 	bouncer.cacheClient.New(
 		log,
@@ -323,9 +320,16 @@ func New(_ context.Context, next http.Handler, config *configuration.Config, nam
 	)
 	config.CaptchaSiteKey, _ = configuration.GetVariable(config, "CaptchaSiteKey")
 	config.CaptchaSecretKey, _ = configuration.GetVariable(config, "CaptchaSecretKey")
+	policyData, _ := json.Marshal(config)
+	policyHash := sha256.Sum256(policyData)
+	bouncer.policyKey = hex.EncodeToString(policyHash[:])
+	// FR: Les preuves captcha ne traversent pas des politiques de route différentes.
+	// EN: Captcha proofs never cross different route policies.
+	captchaCache := &cache.Client{Namespace: "pareflux:captcha:v2:" + bouncer.policyKey + ":"}
+	captchaCache.New(log, config.RedisCacheEnabled, config.RedisCacheHost, config.RedisCachePassword, config.RedisCacheDatabase)
 	err = bouncer.captchaClient.New(
 		log,
-		bouncer.cacheClient,
+		captchaCache,
 		&http.Client{
 			Transport: &http.Transport{MaxIdleConns: 10, IdleConnTimeout: 30 * time.Second},
 			Timeout:   time.Duration(config.HTTPTimeoutSeconds) * time.Second,
@@ -346,31 +350,14 @@ func New(_ context.Context, next http.Handler, config *configuration.Config, nam
 		return nil, err
 	}
 
-	tickerMutex.Lock()
-	if (config.CrowdsecMode == configuration.StreamMode || config.CrowdsecMode == configuration.AloneMode) && streamTicker == nil {
-		if config.CrowdsecMode == configuration.AloneMode {
-			if err := getToken(bouncer); err != nil {
-				bouncer.log.Error("New:getToken " + err.Error())
-				tickerMutex.Unlock()
-				return nil, err
-			}
-		}
-		handleStreamTicker(bouncer)
-		atomic.StoreUint32(&isStartup, 0)
-		streamTicker = startTicker("stream", config.UpdateIntervalSeconds, log, func() {
-			handleStreamTicker(bouncer)
-		})
+	compiledExceptions, err := compileBodyExceptions(config.CrowdsecAppsecBodyExceptions)
+	if err != nil {
+		return nil, err
 	}
-
-	// Start metrics ticker if not already running
-	if metricsTicker == nil && config.MetricsUpdateIntervalSeconds > 0 {
-		lastMetricsPush = time.Now() // Initialize lastMetricsPush when starting the metrics ticker
-		handleMetricsTicker(bouncer)
-		metricsTicker = startTicker("metrics", config.MetricsUpdateIntervalSeconds, log, func() {
-			handleMetricsTicker(bouncer)
-		})
+	bouncer.appsecBodyExceptions = compiledExceptions
+	if err := acquireEngine(ctx, bouncer, config); err != nil {
+		return nil, err
 	}
-	tickerMutex.Unlock()
 
 	bouncer.log.Debug("New initialized mode:" + config.CrowdsecMode)
 
@@ -398,6 +385,12 @@ func (bouncer *Bouncer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// FR: Une politique identique déjà exécutée sur l'entrypoint ne réinspecte pas le corps.
+	// EN: An identical policy already executed at the entrypoint does not inspect the body again.
+	if proof, ok := req.Context().Value(gateContextKey{}).(*gateRequestProof); ok && bouncer.policyKey != "" && proof.gate != nil && proof.gate.policyKey == bouncer.policyKey && proof.gate.engine == bouncer.engine {
+		bouncer.next.ServeHTTP(rw, req)
+		return
+	}
 	req = req.WithContext(context.WithValue(req.Context(), gateContextKey{}, &gateRequestProof{gate: bouncer}))
 	// A caller must not be able to forge the internal remediation marker.
 	bouncer.sanitizeRemediationMarker(req)
@@ -427,6 +420,18 @@ func (bouncer *Bouncer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	if bouncer.engine != nil && (bouncer.crowdsecMode == configuration.StreamMode || bouncer.crowdsecMode == configuration.AloneMode) {
+		if value, found := bouncer.engine.decisions.lookup(remoteIP); found {
+			bouncer.handleRemediationServeHTTP(rw, req, remoteIP, value)
+			return
+		}
+		if shouldBlockOnStreamFailure(bouncer) {
+			bouncer.handleBanServeHTTP(rw, req, remoteIP, configuration.ReasonTECH)
+		} else {
+			bouncer.handleNextServeHTTP(rw, req, remoteIP)
+		}
+		return
+	}
 	// TODO This should be simplified
 	if bouncer.crowdsecMode != configuration.NoneMode {
 		value, cacheErr := bouncer.cacheClient.Get(remoteIP)
@@ -460,7 +465,7 @@ func (bouncer *Bouncer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			bouncer.log.Debug(fmt.Sprintf(
 				"ServeHTTP isCrowdsecStreamHealthy:false ip:%s updateFailure:%d",
 				remoteIP,
-				atomic.LoadInt64(&updateFailure),
+				atomic.LoadInt64(&bouncer.engine.updateFailure),
 			))
 			bouncer.handleBanServeHTTP(rw, req, remoteIP, configuration.ReasonTECH)
 		} else {
@@ -516,6 +521,7 @@ type Decision struct {
 
 // Stream Body returned from Crowdsec Stream LAPI.
 type Stream struct {
+	skipped uint64
 	Deleted []Decision `json:"deleted"`
 	New     []Decision `json:"new"`
 }
@@ -529,7 +535,9 @@ type Login struct {
 
 // To append Headers we need to call rw.WriteHeader after set any header.
 func (bouncer *Bouncer) handleBanServeHTTP(rw http.ResponseWriter, req *http.Request, remoteIP, reason string) {
-	atomic.AddInt64(&blockedRequests, 1)
+	if bouncer.engine != nil {
+		atomic.AddInt64(&bouncer.engine.blockedRequests, 1)
+	}
 
 	if bouncer.remediationCustomHeader != "" {
 		if req.Header == nil {
@@ -575,7 +583,9 @@ func (bouncer *Bouncer) handleRemediationServeHTTP(rw http.ResponseWriter, req *
 			bouncer.handleNextServeHTTP(rw, req, remoteIP)
 			return
 		}
-		atomic.AddInt64(&blockedRequests, 1) //  If we serve a captcha that should count as a dropped request.
+		if bouncer.engine != nil {
+			atomic.AddInt64(&bouncer.engine.blockedRequests, 1)
+		} //  If we serve a captcha that should count as a dropped request.
 		bouncer.captchaClient.ServeHTTP(rw, req, remoteIP)
 		return
 	}
@@ -584,10 +594,39 @@ func (bouncer *Bouncer) handleRemediationServeHTTP(rw http.ResponseWriter, req *
 
 func (bouncer *Bouncer) handleNextServeHTTP(rw http.ResponseWriter, req *http.Request, remoteIP string) {
 	if bouncer.appsecEnabled {
-		if err := appsecQuery(bouncer, remoteIP, req); err != nil {
-			bouncer.log.Debug(fmt.Sprintf("handleNextServeHTTP ip:%s isWaf:true %s", remoteIP, err.Error()))
-			bouncer.handleBanServeHTTP(rw, req, remoteIP, configuration.ReasonAPPSEC)
+		controller := http.NewResponseController(rw)
+		budget := bouncer.appsecTimeout
+		if budget <= 0 {
+			budget = 3 * time.Second
+		}
+		started := time.Now()
+		if bouncer.appsecReadTimeout > 0 {
+			_ = controller.SetReadDeadline(started.Add(budget))
+		}
+		err := appsecQuery(bouncer, remoteIP, req)
+		if bouncer.appsecReadTimeout > 0 {
+			_ = controller.SetReadDeadline(started.Add(bouncer.appsecReadTimeout))
+		}
+		defer releaseInspectionBody(req)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				rw.Header().Set("Connection", "close")
+				rw.WriteHeader(http.StatusRequestTimeout)
+				return
+			}
+			if errors.Is(err, errBodyTooLarge) {
+				rw.WriteHeader(http.StatusRequestEntityTooLarge)
+			} else if errors.Is(err, errInspectionCapacity) || errors.Is(err, errInspectionUnavailable) {
+				rw.Header().Set("Retry-After", "1")
+				rw.WriteHeader(http.StatusServiceUnavailable)
+			} else {
+				bouncer.handleBanServeHTTP(rw, req, remoteIP, configuration.ReasonAPPSEC)
+			}
 			return
+		}
+		if p, ok := req.Context().Value(gateContextKey{}).(*gateRequestProof); ok && p.appsecPartial {
+			rw.Header().Set("X-Pareflux-Appsec-Inspection", "partial")
+			bouncer.log.Warn("AppSec partial inspection: explicit streaming or upload policy")
 		}
 	}
 	bouncer.next.ServeHTTP(rw, req)
@@ -595,16 +634,16 @@ func (bouncer *Bouncer) handleNextServeHTTP(rw http.ResponseWriter, req *http.Re
 
 func handleStreamTicker(bouncer *Bouncer) {
 	if err := handleStreamCache(bouncer); err != nil {
-		failures := atomic.AddInt64(&updateFailure, 1)
-		healthy := crowdsecStreamIsHealthy()
+		failures := atomic.AddInt64(&bouncer.engine.updateFailure, 1)
+		healthy := crowdsecStreamIsHealthy(bouncer)
 		bouncer.log.Warn(fmt.Sprintf("handleStreamTicker updateFailure:%d isCrowdsecStreamHealthy:%t %s", failures, healthy, err.Error()))
 		if bouncer.updateMaxFailure != -1 && failures > bouncer.updateMaxFailure && healthy {
-			atomic.StoreUint32(&isCrowdsecStreamHealthy, 0)
+			atomic.StoreUint32(&bouncer.engine.isCrowdsecStreamHealthy, 0)
 			bouncer.log.Error(fmt.Sprintf("handleStreamTicker:error updateFailure:%d %s", failures, err.Error()))
 		}
 	} else {
-		atomic.StoreUint32(&isCrowdsecStreamHealthy, 1)
-		atomic.StoreInt64(&updateFailure, 0)
+		atomic.StoreUint32(&bouncer.engine.isCrowdsecStreamHealthy, 1)
+		atomic.StoreInt64(&bouncer.engine.updateFailure, 0)
 	}
 }
 
@@ -621,8 +660,11 @@ func handleStreamTicker(bouncer *Bouncer) {
 // Called by: ServeHTTP and handleStreamTicker
 // Calls: sync/atomic
 // /////////////////////////////////////////////////////////////////////////////
-func crowdsecStreamIsHealthy() bool {
-	return atomic.LoadUint32(&isCrowdsecStreamHealthy) == 1
+func crowdsecStreamIsHealthy(bouncer *Bouncer) bool {
+	if bouncer.engine == nil {
+		return false
+	}
+	return atomic.LoadUint32(&bouncer.engine.isCrowdsecStreamHealthy) == 1
 }
 
 // /////////////////////////////////////////////////////////////////////////////
@@ -639,39 +681,23 @@ func crowdsecStreamIsHealthy() bool {
 // Calls: crowdsecStreamIsHealthy
 // /////////////////////////////////////////////////////////////////////////////
 func shouldBlockOnStreamFailure(bouncer *Bouncer) bool {
-	return !crowdsecStreamIsHealthy() && bouncer.streamUnreachableBlock
+	if !bouncer.streamUnreachableBlock {
+		return false
+	}
+	if bouncer.engine == nil {
+		return true
+	}
+	if atomic.LoadInt64(&bouncer.engine.lastStreamSuccess) == 0 {
+		return true
+	}
+	age := time.Now().Unix() - atomic.LoadInt64(&bouncer.engine.lastStreamSuccess)
+	return !crowdsecStreamIsHealthy(bouncer) && age > bouncer.failureGraceSeconds
 }
 
 func handleMetricsTicker(bouncer *Bouncer) {
 	if err := reportMetrics(bouncer); err != nil {
 		bouncer.log.Error("handleMetricsTicker:reportMetrics " + err.Error())
 	}
-}
-
-func startTicker(name string, updateInterval int64, log *slog.Logger, work func()) chan bool {
-	ticker := time.NewTicker(time.Duration(updateInterval) * time.Second)
-	stop := make(chan bool, 1)
-	var running atomic.Bool
-	go func() {
-		defer ticker.Stop()
-		defer log.Debug(name + "_ticker:stopped")
-		for {
-			select {
-			case <-ticker.C:
-				if running.CompareAndSwap(false, true) {
-					go func() {
-						defer running.Store(false)
-						work()
-					}()
-				} else {
-					log.Warn(name + "_ticker:skipped overlapping run")
-				}
-			case <-stop:
-				return
-			}
-		}
-	}()
-	return stop
 }
 
 // We are now in none or live mode.
@@ -689,7 +715,9 @@ func handleNoStreamCache(bouncer *Bouncer, remoteIP string) (string, error) {
 	}
 
 	if bytes.Equal(body, []byte("null")) {
-		atomic.StoreInt64(&lastLiveSuccess, time.Now().Unix())
+		if bouncer.engine != nil {
+			atomic.StoreInt64(&bouncer.engine.lastLiveSuccess, time.Now().Unix())
+		}
 		if isLiveMode {
 			bouncer.cacheClient.Set(remoteIP, cache.NoBannedValue, bouncer.defaultDecisionTimeout)
 		}
@@ -702,7 +730,9 @@ func handleNoStreamCache(bouncer *Bouncer, remoteIP string) (string, error) {
 		return cache.BannedValue, fmt.Errorf("handleNoStreamCache:parseBody %w", err)
 	}
 	if len(decisions) == 0 {
-		atomic.StoreInt64(&lastLiveSuccess, time.Now().Unix())
+		if bouncer.engine != nil {
+			atomic.StoreInt64(&bouncer.engine.lastLiveSuccess, time.Now().Unix())
+		}
 		if isLiveMode {
 			bouncer.cacheClient.Set(remoteIP, cache.NoBannedValue, bouncer.defaultDecisionTimeout)
 		}
@@ -735,7 +765,9 @@ func handleNoStreamCache(bouncer *Bouncer, remoteIP string) (string, error) {
 		}
 		bouncer.cacheClient.Set(remoteIP, value, durationSecond)
 	}
-	atomic.StoreInt64(&lastLiveSuccess, time.Now().Unix())
+	if bouncer.engine != nil {
+		atomic.StoreInt64(&bouncer.engine.lastLiveSuccess, time.Now().Unix())
+	}
 	return value, errors.New("handleNoStreamCache:banned")
 }
 
@@ -759,13 +791,10 @@ func getToken(bouncer *Bouncer) error {
 		Path:   crowdsecCapiLoginRoute,
 	}
 
-	// Move the login-specific payload here
-	loginData := []byte(fmt.Sprintf(
-		`{"machine_id": "%v","password": "%v","scenarios": ["%v"]}`,
-		bouncer.crowdsecMachineID,
-		bouncer.crowdsecPassword,
-		strings.Join(bouncer.crowdsecScenarios, `","`),
-	))
+	loginData, err := json.Marshal(map[string]interface{}{"machine_id": bouncer.crowdsecMachineID, "password": bouncer.crowdsecPassword, "scenarios": bouncer.crowdsecScenarios})
+	if err != nil {
+		return err
+	}
 
 	body, err := crowdsecQueryWithRefresh(bouncer, loginURL.String(), loginData, false)
 	if err != nil {
@@ -777,6 +806,10 @@ func getToken(bouncer *Bouncer) error {
 		return fmt.Errorf("getToken:parsingBody %w", err)
 	}
 	if login.Code == http.StatusOK && len(login.Token) > 0 {
+		if bouncer.engine != nil {
+			bouncer.engine.tokenMutex.Lock()
+			defer bouncer.engine.tokenMutex.Unlock()
+		}
 		bouncer.crowdsecKey = login.Token
 		return nil
 	}
@@ -785,61 +818,31 @@ func getToken(bouncer *Bouncer) error {
 }
 
 func handleStreamCache(bouncer *Bouncer) error {
-	// TODO clean properly on exit.
-	// Instead of blocking the goroutine interval for all the secondary node,
-	// if the master service is shut down, other goroutine can take the lead
-	// because updated routine information is in the cache
-	_, err := bouncer.cacheClient.Get(cacheTimeoutKey)
-	if err == nil {
-		bouncer.log.Debug("handleStreamCache:alreadyUpdated")
-		return nil
-	}
-	if err.Error() != cache.CacheMiss {
-		return err
-	}
-	cacheUpdateLockSeconds := bouncer.updateInterval - 1
-	if cacheUpdateLockSeconds < 1 {
-		cacheUpdateLockSeconds = 1
-	}
-	bouncer.cacheClient.Set(cacheTimeoutKey, cache.NoBannedValue, cacheUpdateLockSeconds)
-	streamRouteURL := url.URL{
-		Scheme: bouncer.crowdsecScheme,
-		Host:   bouncer.crowdsecHost,
-		Path:   bouncer.crowdsecPath + bouncer.crowdsecStreamRoute,
-		RawQuery: fmt.Sprintf(
-			"startup=%t",
-			!crowdsecStreamIsHealthy() || atomic.LoadUint32(&isStartup) == 1,
-		),
-	}
-	body, err := crowdsecQuery(bouncer, streamRouteURL.String(), nil)
-	if err != nil {
-		return err
-	}
+	// Full snapshots avoid losing deltas when old and new credential configurations overlap.
+	route := url.URL{Scheme: bouncer.crowdsecScheme, Host: bouncer.crowdsecHost, Path: bouncer.crowdsecPath + bouncer.crowdsecStreamRoute, RawQuery: "startup=true"}
 	var stream Stream
-	err = json.Unmarshal(body, &stream)
+	_, err := crowdsecQueryConsume(bouncer, route.String(), nil, true, func(reader io.Reader) error {
+		var decodeErr error
+		stream, decodeErr = decodeDecisionSnapshot(reader, bouncer.engine.decisions.capacity)
+		return decodeErr
+	})
 	if err != nil {
-		return fmt.Errorf("handleStreamCache:parsingBody %w", err)
-	}
-	for _, decision := range stream.New {
-		duration, err := time.ParseDuration(decision.Duration)
-		if err == nil {
-			var value string
-			switch decision.Type {
-			case "ban":
-				value = cache.BannedValue
-			case "captcha":
-				value = cache.CaptchaValue
-			default:
-				bouncer.log.Info("handleStreamCache:unknownType " + decision.Type)
-			}
-			bouncer.cacheClient.Set(decision.Value, value, int64(duration.Seconds()))
+		if errors.Is(err, errDecisionCapacity) {
+			bouncer.engine.decisions.mu.Lock()
+			bouncer.engine.decisions.overflow = true
+			bouncer.engine.decisions.mu.Unlock()
 		}
+		return err
 	}
-	for _, decision := range stream.Deleted {
-		bouncer.cacheClient.Delete(decision.Value)
+	beforeSkipped := bouncer.engine.decisions.skippedCount()
+	if err = bouncer.engine.decisions.apply(stream, true); err != nil {
+		return err
 	}
-	atomic.StoreInt64(&lastStreamSuccess, time.Now().Unix())
-	bouncer.log.Info("handleStreamCache:updated")
+	if skipped := bouncer.engine.decisions.skippedCount() - beforeSkipped; skipped > 0 {
+		bouncer.log.Warn("CrowdSec decisions skipped", "count", skipped)
+	}
+	atomic.StoreInt64(&bouncer.engine.lastStreamSuccess, time.Now().Unix())
+	atomic.StoreUint32(&bouncer.engine.isStartup, 0)
 	return nil
 }
 
@@ -874,13 +877,28 @@ func crowdsecQuery(bouncer *Bouncer, stringURL string, data []byte) ([]byte, err
 // Calls: getToken, http.Client.Do
 // /////////////////////////////////////////////////////////////////////////////
 func crowdsecQueryWithRefresh(bouncer *Bouncer, stringURL string, data []byte, allowTokenRefresh bool) ([]byte, error) {
+	return crowdsecQueryConsume(bouncer, stringURL, data, allowTokenRefresh, nil)
+}
+
+// crowdsecQueryConsume retains authentication retries while permitting bounded incremental consumers.
+// FR: Le consommateur n'est invoqué qu'après validation HTTP, sous le délai total du client.
+// EN: The consumer runs only after HTTP validation, under the client's total timeout.
+// Called by: crowdsecQueryWithRefresh, handleStreamCache; Calls: HTTP client and consumer.
+func crowdsecQueryConsume(bouncer *Bouncer, stringURL string, data []byte, allowTokenRefresh bool, consume func(io.Reader) error) ([]byte, error) {
 	var req *http.Request
 	if len(data) > 0 {
 		req, _ = http.NewRequest(http.MethodPost, stringURL, bytes.NewBuffer(data))
 	} else {
 		req, _ = http.NewRequest(http.MethodGet, stringURL, nil)
 	}
+	if bouncer.engine != nil {
+		req = req.WithContext(bouncer.engine.ctx)
+		bouncer.engine.tokenMutex.Lock()
+	}
 	req.Header.Add(bouncer.crowdsecHeader, bouncer.crowdsecKey)
+	if bouncer.engine != nil {
+		bouncer.engine.tokenMutex.Unlock()
+	}
 	req.Header.Add("User-Agent", "PareFlux-Gate/"+pluginVersion)
 
 	res, err := bouncer.httpClient.Do(req)
@@ -896,7 +914,7 @@ func crowdsecQueryWithRefresh(bouncer *Bouncer, stringURL string, data []byte, a
 		if errToken := getToken(bouncer); errToken != nil {
 			return nil, fmt.Errorf("crowdsecQuery:renewToken url:%s %w", stringURL, errToken)
 		}
-		return crowdsecQueryWithRefresh(bouncer, stringURL, data, false)
+		return crowdsecQueryConsume(bouncer, stringURL, data, false, consume)
 	}
 
 	// Check if the status code starts with 2
@@ -905,128 +923,43 @@ func crowdsecQueryWithRefresh(bouncer *Bouncer, stringURL string, data []byte, a
 		return nil, fmt.Errorf("crowdsecQuery method:%s url:%s, statusCode:%d (expected: 2xx)", req.Method, stringURL, res.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(res.Body, maxCrowdSecResponseBytes+1))
+	responseLimit := int64(maxCrowdSecResponseBytes)
+	if bouncer.engine != nil && strings.Contains(req.URL.Path, bouncer.crowdsecStreamRoute) && bouncer.crowdsecStreamRoute != "" {
+		responseLimit = int64(bouncer.engine.decisions.capacity)*512 + (1 << 20)
+		if responseLimit < maxCrowdSecResponseBytes {
+			responseLimit = maxCrowdSecResponseBytes
+		}
+		if responseLimit > 256<<20 {
+			responseLimit = 256 << 20
+		}
+	}
+	if consume != nil {
+		limited := &io.LimitedReader{R: res.Body, N: responseLimit + 1}
+		if consumeErr := consume(limited); consumeErr != nil {
+			return nil, consumeErr
+		}
+		if limited.N <= 0 {
+			return nil, fmt.Errorf("CrowdSec response size exceeded")
+		}
+		return nil, nil
+	}
+	body, err := io.ReadAll(io.LimitReader(res.Body, responseLimit+1))
 	if err != nil {
 		return nil, fmt.Errorf("crowdsecQuery:readBody %w", err)
 	}
-	if len(body) > maxCrowdSecResponseBytes {
-		return nil, fmt.Errorf("crowdsecQuery:response exceeds %d bytes", maxCrowdSecResponseBytes)
+	if int64(len(body)) > responseLimit {
+		return nil, fmt.Errorf("crowdsecQuery:response exceeds %d bytes", responseLimit)
 	}
 	return body, nil
 }
 
-func appsecQuery(bouncer *Bouncer, ip string, httpReq *http.Request) error {
-	routeURL := url.URL{
-		Scheme: bouncer.appsecScheme,
-		Host:   bouncer.appsecHost,
-		Path:   bouncer.appsecPath,
-	}
-	var req *http.Request
-	if shouldInspectAppsecBody(bouncer, httpReq) {
-		var bodyBuffer bytes.Buffer
-		limitedReader := io.LimitReader(httpReq.Body, bouncer.appsecBodyLimit)
-		teeReader := io.TeeReader(limitedReader, &bodyBuffer)
-		bodyBytes, err := io.ReadAll(teeReader)
-		if err != nil {
-			return fmt.Errorf("appsecQuery:GetBody %w", err)
-		}
-		// Conserve body intact after reading it for other middlewares and service
-		httpReq.Body = io.NopCloser(io.MultiReader(&bodyBuffer, httpReq.Body))
-		req, _ = http.NewRequest(http.MethodPost, routeURL.String(), bytes.NewBuffer(bodyBytes))
-	} else {
-		req, _ = http.NewRequest(http.MethodGet, routeURL.String(), nil)
-	}
-
-	for key, headers := range httpReq.Header {
-		switch http.CanonicalHeaderKey(key) {
-		case "Authorization", "Cookie", "Proxy-Authorization":
-			continue
-		}
-		for _, value := range headers {
-			req.Header.Add(key, value)
-		}
-	}
-	req.Header.Set(crowdsecAppsecHeader, bouncer.appsecKey)
-	req.Header.Set(crowdsecAppsecIPHeader, ip)
-	req.Header.Set(crowdsecAppsecVerbHeader, httpReq.Method)
-	req.Header.Set(crowdsecAppsecHostHeader, httpReq.Host)
-	req.Header.Set(crowdsecAppsecURIHeader, httpReq.URL.String())
-	req.Header.Set(crowdsecAppsecUserAgent, httpReq.Header.Get("User-Agent"))
-
-	res, err := bouncer.httpAppsecClient.Do(req)
-	if err != nil {
-		bouncer.log.Error("appsecQuery:unreachable error=" + err.Error())
-		if bouncer.appsecUnreachableBlock {
-			return fmt.Errorf("appsecQuery:unreachable %w", err)
-		}
-		return nil
-	}
-	defer func() {
-		if err = res.Body.Close(); err != nil {
-			bouncer.log.Error("appsecQuery:closeBody " + err.Error())
-		}
-	}()
-	if _, drainErr := io.Copy(io.Discard, io.LimitReader(res.Body, maxAppsecResponseBytes)); drainErr != nil {
-		return fmt.Errorf("appsecQuery:readBody %w", drainErr)
-	}
-	if res.StatusCode == http.StatusInternalServerError {
-		bouncer.log.Info("appsecQuery:failure")
-		if bouncer.appsecFailureBlock {
-			return errors.New("appsecQuery statusCode:500")
-		}
-		return nil
-	}
-	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("appsecQuery statusCode:%d", res.StatusCode)
-	}
-
-	if proof, ok := httpReq.Context().Value(gateContextKey{}).(*gateRequestProof); ok {
-		proof.appsecConfirmed = true
-	}
-
-	return nil
-}
-
-// /////////////////////////////////////////////////////////////////////////////
-// shouldInspectAppsecBody
-// FR: Évite de précharger les corps des protocoles en flux continu tout en
-//
-//	conservant l'inspection AppSec des en-têtes, de la méthode et de l'URL.
-//
-// EN: Avoids preloading streaming protocol bodies while retaining AppSec
-//
-//	inspection of headers, method, and URL.
-//
-// Called by: appsecQuery and tests
-// Calls: standard HTTP header helpers
-// /////////////////////////////////////////////////////////////////////////////
-func shouldInspectAppsecBody(bouncer *Bouncer, req *http.Request) bool {
-	if bouncer.appsecBodyLimit <= 0 || req.Body == nil {
-		return false
-	}
-	if strings.HasPrefix(strings.ToLower(req.Header.Get("Content-Type")), "application/grpc") {
-		return false
-	}
-	contentType := strings.ToLower(strings.TrimSpace(strings.Split(req.Header.Get("Content-Type"), ";")[0]))
-	for _, excluded := range bouncer.appsecBodyExcludedTypes {
-		excluded = strings.ToLower(strings.TrimSpace(excluded))
-		if excluded == "" {
-			continue
-		}
-		if contentType == excluded || (strings.HasSuffix(excluded, "/") && strings.HasPrefix(contentType, excluded)) {
-			return false
-		}
-	}
-	return !strings.EqualFold(req.Header.Get("Upgrade"), "websocket")
-}
-
 func reportMetrics(bouncer *Bouncer) error {
-	metricsMutex.Lock()
-	defer metricsMutex.Unlock()
+	bouncer.engine.metricsMutex.Lock()
+	defer bouncer.engine.metricsMutex.Unlock()
 
 	now := time.Now()
-	currentCount := atomic.LoadInt64(&blockedRequests)
-	windowSizeSeconds := int(now.Sub(lastMetricsPush).Seconds())
+	currentCount := atomic.LoadInt64(&bouncer.engine.blockedRequests)
+	windowSizeSeconds := int(now.Sub(bouncer.engine.lastMetricsPush).Seconds())
 
 	bouncer.log.Debug(fmt.Sprintf("reportMetrics: blocked_requests=%d window_size=%ds", currentCount, windowSizeSeconds))
 
@@ -1054,7 +987,7 @@ func reportMetrics(bouncer *Bouncer) error {
 						},
 					},
 				},
-				"utc_startup_timestamp": time.Now().Unix(),
+				"utc_startup_timestamp": bouncer.engine.startedAt.Unix(),
 				"feature_flags":         []string{},
 				"os": map[string]string{
 					"name":    "unknown",
@@ -1080,7 +1013,7 @@ func reportMetrics(bouncer *Bouncer) error {
 		return fmt.Errorf("reportMetrics:query %w", err)
 	}
 
-	atomic.StoreInt64(&blockedRequests, 0)
-	lastMetricsPush = now
+	atomic.StoreInt64(&bouncer.engine.blockedRequests, 0)
+	bouncer.engine.lastMetricsPush = now
 	return nil
 }

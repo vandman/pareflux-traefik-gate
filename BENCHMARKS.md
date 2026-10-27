@@ -1,33 +1,31 @@
-# Runtime benchmarks
+<!-- FR: Définit les mesures reproductibles du runtime actuel. EN: Defines reproducible measurements for the current runtime. Called by: maintainers; Calls: integration fixture. -->
+# Runtime performance verification
 
-## Traefik/Yaegi comparison
+[Français](BENCHMARKS.FR.md)
 
-The first PareFlux Gate benchmark compared:
+There is no published capacity measurement for the current protection engine.
+Passing native Go or real Traefik integration tests demonstrates behavior, not
+throughput or resistance to a distributed flood. Native timings also do not
+represent the Yaegi interpreter used by Traefik.
 
-- Traefik `v3.7.5`;
-- upstream plugin `v1.6.0` at commit
-  `1f6a8991c8f9273cf21a5da3a6e6875a5c0034cc`;
-- PareFlux Gate using PareFlux TTL Cache `v0.1.0`;
-- a live-mode allowed-decision hot-cache path;
-- 50,000 requests per run, concurrency 32, three runs;
-- the same host, backend, mock LAPI, images, and load generator.
+## Reproducible measurement
 
-The upstream checkout and GPL cache remained outside this repository.
+Use the isolated `test/docker-compose.yml` stack, which loads the local source
+and disables CrowdSec online API communication. Do not generate attack traffic
+against a production system or share synthetic alerts.
 
-| Implementation | Requests/s | p50 | p95 | p99 | Errors |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Upstream cache | 3,427 | 7.966 ms | 20.271 ms | 28.663 ms | 0 |
-| PareFlux cache | 3,365 | 8.132 ms | 20.516 ms | 29.452 ms | 0 |
+```bash
+./scripts/ci-docker.sh compose --project-name pareflux-perf -f test/docker-compose.yml up --build --detach --wait
+curl --header 'Host: pareflux.localhost' http://127.0.0.1:18080/
+# Run measurements against this loopback-only fixture.
+./scripts/ci-docker.sh compose --project-name pareflux-perf -f test/docker-compose.yml down --volumes
+```
 
-The measured throughput difference was approximately `-1.8%`, within the
-predeclared 5% native and 10% real-runtime tolerances. The benchmark is a
-machine-local comparison, not a universal capacity claim.
-
-## Native cache result
-
-On the same host, the PareFlux cache hot `Get` path measured approximately
-19–20 ns/op with zero allocation. The external upstream reference measured
-approximately 24–25 ns/op with zero allocation. PareFlux `Set` measured
-approximately 80 ns/op against approximately 82–90 ns/op upstream.
-
-Benchmarks must be rerun for every Traefik, Go, Yaegi, or cache version change.
+Use the same machine, backend, load generator, request count and concurrency for
+comparisons. Record the source commit, Go/Traefik/CrowdSec/cache versions, CPU and
+memory limits, warm-up, payload, mode, AppSec settings and number of decisions.
+Measure allowed and blocked traffic separately, stream IP/range lookup, live
+cache hits/misses, body inspection and snapshot synchronization. Repeat each
+measurement and report throughput, p50/p95/p99 latency, errors and peak memory.
+A local result is not a universal capacity claim. Repeat measurements when the
+engine, runtime or dependencies change.

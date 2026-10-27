@@ -1,34 +1,32 @@
-# Benchmarks d'exécution
+<!-- FR: Définit les mesures reproductibles du runtime actuel. EN: Defines reproducible measurements for the current runtime. Called by: maintainers; Calls: integration fixture. -->
+# Vérification des performances d’exécution
 
-## Comparaison Traefik/Yaegi
+[English](BENCHMARKS.md)
 
-Le premier benchmark PareFlux Gate a comparé :
+Aucune mesure de capacité n’est publiée pour le moteur de protection actuel.
+La réussite des tests Go natifs ou intégrés Traefik démontre un comportement,
+pas un débit ni une résistance aux afflux distribués. Les temps natifs ne
+représentent pas non plus l’interpréteur Yaegi utilisé par Traefik.
 
-- Traefik `v3.7.5` ;
-- le plugin amont `v1.6.0` au commit
-  `1f6a8991c8f9273cf21a5da3a6e6875a5c0034cc` ;
-- PareFlux Gate utilisant PareFlux TTL Cache `v0.1.0` ;
-- un chemin autorisé en mode live avec cache chaud ;
-- 50 000 requêtes par exécution, concurrence 32, trois exécutions ;
-- le même hôte, backend, faux LAPI, images et générateur de charge.
+## Mesure reproductible
 
-Le checkout amont et le cache GPL sont restés hors de ce dépôt.
+Utiliser la pile isolée `test/docker-compose.yml`, qui charge les sources locales
+et désactive les échanges avec l’API en ligne CrowdSec. Ne pas générer de trafic
+d’attaque contre la production ni partager des alertes synthétiques.
 
-| Implémentation | Requêtes/s | p50 | p95 | p99 | Erreurs |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Cache amont | 3 427 | 7,966 ms | 20,271 ms | 28,663 ms | 0 |
-| Cache PareFlux | 3 365 | 8,132 ms | 20,516 ms | 29,452 ms | 0 |
+```bash
+./scripts/ci-docker.sh compose --project-name pareflux-perf -f test/docker-compose.yml up --build --detach --wait
+curl --header 'Host: pareflux.localhost' http://127.0.0.1:18080/
+# Effectuer les mesures contre cette pile publiée uniquement sur loopback.
+./scripts/ci-docker.sh compose --project-name pareflux-perf -f test/docker-compose.yml down --volumes
+```
 
-La différence de débit mesurée est d'environ `-1,8 %`, dans les tolérances
-prédéclarées de 5 % en natif et 10 % dans le runtime réel. Ce benchmark local
-ne constitue pas une affirmation universelle de capacité.
-
-## Résultat natif du cache
-
-Sur le même hôte, le chemin `Get` chaud du cache PareFlux mesure environ
-19–20 ns/op sans allocation. La référence amont externe mesure environ
-24–25 ns/op sans allocation. Le `Set` PareFlux mesure environ 80 ns/op contre
-environ 82–90 ns/op pour l'amont.
-
-Les benchmarks doivent être relancés à chaque changement de version de
-Traefik, Go, Yaegi ou du cache.
+Comparer sur le même hôte, backend, générateur, nombre de requêtes et concurrence.
+Consigner le commit source, les versions Go/Traefik/CrowdSec/cache, les limites
+CPU et mémoire, la chauffe, la charge utile, le mode, les réglages AppSec et le
+nombre de décisions. Mesurer séparément le trafic autorisé et bloqué, la recherche
+IP/plage stream, les succès/défauts de cache live, l’inspection des corps et la
+synchronisation des instantanés. Répéter chaque mesure et publier le débit, les
+latences p50/p95/p99, les erreurs et le pic mémoire. Une mesure locale n’est pas
+une capacité universelle. Recommencer lors d’un changement du moteur, du runtime
+ou des dépendances.

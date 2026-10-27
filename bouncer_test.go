@@ -150,9 +150,9 @@ func TestHandleBanServeHTTPWithDifferentMethods(t *testing.T) {
 // Calls: shouldBlockOnStreamFailure
 // /////////////////////////////////////////////////////////////////////////////
 func TestStreamFailurePolicy(t *testing.T) {
-	atomic.StoreUint32(&isCrowdsecStreamHealthy, 0)
+
 	t.Cleanup(func() {
-		atomic.StoreUint32(&isCrowdsecStreamHealthy, 1)
+
 	})
 
 	if shouldBlockOnStreamFailure(&Bouncer{}) {
@@ -333,6 +333,7 @@ func TestAppsecBodyHandling(t *testing.T) {
 		defer appsec.Close()
 
 		bouncer := testAppsecBouncer(t, appsec.URL, 5)
+		bouncer.appsecBodyLimitAction = "partial"
 		payload := []byte("hello-world")
 		req := httptest.NewRequest(http.MethodPost, "https://example.test/upload", bytes.NewReader(payload))
 		req.Header.Set("Authorization", "Bearer private-token")
@@ -341,6 +342,7 @@ func TestAppsecBodyHandling(t *testing.T) {
 		if err := appsecQuery(bouncer, "192.0.2.1", req); err != nil {
 			t.Fatal(err)
 		}
+		defer releaseInspectionBody(req)
 		forwarded, err := io.ReadAll(req.Body)
 		if err != nil {
 			t.Fatal(err)
@@ -356,10 +358,11 @@ func TestAppsecBodyHandling(t *testing.T) {
 		}
 	})
 
-	t.Run("grpc body is not consumed", func(t *testing.T) {
+	t.Run("grpc headers do not bypass body inspection", func(t *testing.T) {
 		var appsecMethod string
 		appsec := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 			appsecMethod = req.Method
+			io.Copy(io.Discard, req.Body)
 			rw.WriteHeader(http.StatusOK)
 		}))
 		defer appsec.Close()
@@ -367,16 +370,18 @@ func TestAppsecBodyHandling(t *testing.T) {
 		bouncer := testAppsecBouncer(t, appsec.URL, 1024)
 		payload := []byte("stream-frame")
 		req := httptest.NewRequest(http.MethodPost, "https://example.test/grpc", bytes.NewReader(payload))
+		req.ProtoMajor = 2
 		req.Header.Set("Content-Type", "application/grpc+proto")
 		if err := appsecQuery(bouncer, "192.0.2.1", req); err != nil {
 			t.Fatal(err)
 		}
+		defer releaseInspectionBody(req)
 		forwarded, err := io.ReadAll(req.Body)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if appsecMethod != http.MethodGet {
-			t.Fatalf("AppSec method = %s, want GET without buffered body", appsecMethod)
+		if appsecMethod != http.MethodPost {
+			t.Fatalf("AppSec method = %s, want POST with inspected body", appsecMethod)
 		}
 		if !bytes.Equal(forwarded, payload) {
 			t.Fatalf("forwarded body = %q, want %q", forwarded, payload)
@@ -399,12 +404,13 @@ func TestAppsecBodyHandling(t *testing.T) {
 		if err := appsecQuery(bouncer, "192.0.2.1", req); err != nil {
 			t.Fatal(err)
 		}
+		defer releaseInspectionBody(req)
 		forwarded, err := io.ReadAll(req.Body)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if appsecMethod != http.MethodGet {
-			t.Fatalf("AppSec method = %s, want GET without buffered body", appsecMethod)
+		if appsecMethod != http.MethodPost {
+			t.Fatalf("AppSec method = %s, want POST with inspected binary body", appsecMethod)
 		}
 		if !bytes.Equal(forwarded, payload) {
 			t.Fatalf("forwarded body = %q, want %q", forwarded, payload)
@@ -418,8 +424,8 @@ func TestAppsecBodyHandling(t *testing.T) {
 		}
 		req := httptest.NewRequest(http.MethodPost, "https://example.test/photo", bytes.NewReader([]byte("jpeg")))
 		req.Header.Set("Content-Type", "image/jpeg; charset=binary")
-		if shouldInspectAppsecBody(bouncer, req) {
-			t.Fatal("image body should not be inspected")
+		if !shouldInspectAppsecBody(bouncer, req) {
+			t.Fatal("client MIME header must not bypass inspection")
 		}
 	})
 }

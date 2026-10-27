@@ -7,6 +7,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -198,5 +199,40 @@ func TestReadableGitHubLinksSurviveCatalogRewrite(t *testing.T) {
 	}
 	if _, err := e.target(doc, "https://raw.githubusercontent.com/example/plugin/main/docs", true); err == nil {
 		t.Fatal("image cannot reference a directory")
+	}
+}
+
+// TestDocumentationTargets
+// FR: Valide aussi les liens des guides secondaires sans réécrire leurs fichiers.
+// EN: Also validates secondary guide links without rewriting their files.
+// Called by: go test; Calls: transform and local documentation.
+func TestDocumentationTargets(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.ReadFile(filepath.Join(root, "version.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := regexp.MustCompile(`pluginVersion = "([0-9.]+)"`).FindStringSubmatch(string(source))
+	if len(version) != 2 {
+		t.Fatal("missing source version")
+	}
+	e := exporter{root, "github.com/vandman/pareflux-traefik-gate", "v" + version[1]}
+	for _, pattern := range []string{"*.md", "docs/*.md"} {
+		paths, err := filepath.Glob(filepath.Join(root, pattern))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range paths {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := e.transform(path, string(raw)); err != nil {
+				t.Errorf("%s: %v", path, err)
+			}
+		}
 	}
 }

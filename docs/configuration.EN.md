@@ -12,7 +12,9 @@ These are the exact JSON/YAML option names and constructor defaults from
 otherwise; list types use YAML sequences. A `File` setting takes precedence
 over its inline counterpart and refers to a file readable **inside Traefik**.
 Empty values do not necessarily mean a feature is usable without credentials.
-AppSec inherits LAPI scheme, TLS and key unless explicitly overridden.
+AppSec inherits LAPI scheme and TLS unless overridden; in LAPI modes it also
+inherits the LAPI key. In `alone` mode, provide a separate AppSec bouncer key
+if HTTP inspection is enabled: Central API credentials are not an AppSec key.
 
 Copy only the settings you need; the installation guide sets `stream` explicitly.
 
@@ -28,10 +30,12 @@ Copy only the settings you need; the installation guide sets `stream` explicitly
 | `crowdsecMode` | `string` | `"live"` | Decision mode: stream, live, none, appsec or alone. |
 | `updateIntervalSeconds` | `int64` | `60` | Stream refresh seconds; alone mode overrides this with 7200 seconds. |
 | `metricsUpdateIntervalSeconds` | `int64` | `600` | Remediation metrics reporting interval to CrowdSec; zero disables the worker. |
-| `updateMaxFailure` | `int64` | `0` | Allowed consecutive stream update failures before unhealthy; 0 means first failure, -1 disables that transition. |
+| `updateMaxFailure` | `int64` | `3` | Allowed consecutive stream update failures before unhealthy; 0 means first failure, -1 disables that transition. |
 | `defaultDecisionSeconds` | `int64` | `60` | Maximum live cache lifetime in seconds, bounded by the decision duration. |
-| `remediationStatusCode` | `int` | `403` | HTTP status returned for bans and technical rejection. |
+| `remediationStatusCode` | `int` | `403` | HTTP status for security bans; technical errors use 408, 413 or 503 independently. |
 | `httpTimeoutSeconds` | `int64` | `10` | LAPI/CAPI HTTP timeout in seconds. |
+| `streamDecisionCapacity` | `int64` | `262144` | Active decision limit (maximum 1000000); no active-ban eviction, fail closed on overflow. |
+| `failureGraceSeconds` | `int64` | `60` | Grace after the last successful stream synchronization or AppSec inspection, subject to failure thresholds. |
 
 ## LAPI and TLS
 
@@ -49,7 +53,7 @@ Copy only the settings you need; the installation guide sets `stream` explicitly
 | `crowdsecLapiTlsCertificateBouncerFile` | `string` | `""` | Read crowdsecLapiTlsCertificateBouncer from this file inside Traefik; takes precedence over the inline value. |
 | `crowdsecLapiTlsCertificateBouncerKey` | `string` | `""` | PEM private key matching the client certificate. |
 | `crowdsecLapiTlsCertificateBouncerKeyFile` | `string` | `""` | Read crowdsecLapiTlsCertificateBouncerKey from this file inside Traefik; takes precedence over the inline value. |
-| `crowdsecStreamUnreachableBlock` | `bool` | `true` | Block cache misses when the stream is unhealthy; cached bans remain enforced. |
+| `crowdsecStreamUnreachableBlock` | `bool` | `true` | Refuse unknown clients after the stream failure threshold and grace; unexpired known bans remain enforced. |
 
 ## AppSec
 
@@ -68,11 +72,15 @@ Copy only the settings you need; the installation guide sets `stream` explicitly
 | `crowdsecAppsecTlsCertificateBouncerFile` | `string` | `""` | Read crowdsecAppsecTlsCertificateBouncer from this file inside Traefik; takes precedence over the inline value. |
 | `crowdsecAppsecTlsCertificateBouncerKey` | `string` | `""` | PEM private key matching the client certificate. |
 | `crowdsecAppsecTlsCertificateBouncerKeyFile` | `string` | `""` | Read crowdsecAppsecTlsCertificateBouncerKey from this file inside Traefik; takes precedence over the inline value. |
-| `crowdsecAppsecFailureBlock` | `bool` | `true` | Block on an AppSec internal HTTP error. |
-| `crowdsecAppsecUnreachableBlock` | `bool` | `true` | Block when AppSec is unreachable. |
+| `crowdsecAppsecFailureBlock` | `bool` | `true` | Refuse HTTP 502/503/504 after grace; false permits those errors. HTTP 500 remains blocking. |
+| `crowdsecAppsecUnreachableBlock` | `bool` | `true` | Refuse connection establishment failures after grace; false permits them. Connected timeouts remain blocking. |
 | `crowdsecAppsecBodyLimit` | `int64` | `1048576` | Maximum inspected body prefix in bytes; zero disables body inspection, not metadata checks. |
-| `crowdsecAppsecBodyExcludedContentTypes` | `[]string` | `["application/octet-stream","image/","audio/","video/"]` | Content types skipped for body buffering; entries ending in / match a family. |
-| `crowdsecAppsecTimeoutSeconds` | `int64` | `3` | AppSec HTTP client timeout in seconds. |
+| `crowdsecAppsecBodyLimitAction` | `string` | `"reject"` | Oversize policy: reject with 413, or explicit partial inspection for this middleware. |
+| `crowdsecAppsecBodyExceptions` | `[]object` | `[]` | Up to 32 partial-inspection upload exceptions: exact host, anchored pathRegexp and POST/PUT/PATCH methods. |
+| `crowdsecAppsecBodyExcludedContentTypes` | `[]string` | `[]` | Compatibility only; no longer bypasses inspection. |
+| `crowdsecAppsecReadTimeoutSeconds` | `int64` | `60` | Finite body deadline after inspection; align with Traefik, 0 leaves deadlines untouched. |
+| `crowdsecAppsecMaxConcurrentPerClient` | `int64` | `4` | Buffered bodies per IPv4 or IPv6 /64; IPv6 /48 allows four times this quota. Maximum 64; 0 uses 4; bodyless requests are not counted. |
+| `crowdsecAppsecTimeoutSeconds` | `int64` | `3` | Total budget for body reading and AppSec inspection; default 3 seconds, 0 also uses 3. |
 
 ## Client identity and logs
 
@@ -88,12 +96,12 @@ Copy only the settings you need; the installation guide sets `stream` explicitly
 
 | Option | Type | Default | Purpose |
 | --- | --- | --- | --- |
-| `redisCacheEnabled` | `bool` | `false` | Use Redis instead of the local TTL cache. |
+| `redisCacheEnabled` | `bool` | `false` | Use Redis for live lookups and captcha; stream/alone decisions remain in the separate in-memory store. |
 | `redisCacheHost` | `string` | `"redis:6379"` | Redis hostname and port. |
 | `redisCachePassword` | `string` | `""` | Redis password; prefer the File counterpart. |
 | `redisCachePasswordFile` | `string` | `""` | Read redisCachePassword from this file inside Traefik; takes precedence over the inline value. |
 | `redisCacheDatabase` | `string` | `""` | Redis database number as a string; empty uses the default database. |
-| `redisCacheUnreachableBlock` | `bool` | `true` | Reject requests when the enabled Redis cache cannot be reached. |
+| `redisCacheUnreachableBlock` | `bool` | `true` | Reject a request needing a Redis lookup when Redis cannot be reached; stream IP lookups do not use Redis. |
 
 ## Captcha and ban templates
 
@@ -130,3 +138,8 @@ Copy only the settings you need; the installation guide sets `stream` explicitly
 | `dashboardIntegration` | `bool` | `false` | Enable private URL discovery on a separate navigation middleware with enabled=false. |
 | `dashboardLinkURL` | `string` | `""` | Public Control HTTPS URL or safe absolute path; deployment-derived initial link. |
 | `dashboardHost` | `string` | `""` | Exact native dashboard hostname; no scheme or path. |
+| `dashboardDiscoveryKey` | `string` | `""` | Shared HMAC key, at least 32 bytes; prefer a secret file. |
+| `dashboardDiscoveryKeyFile` | `string` | `""` | Read the shared discovery key from a file inside Traefik. |
+| `dashboardRegistrationAllowed` | `bool` | `false` | Enable signed registration only on the private navigation instance. |
+
+[Runtime limits and policies](security-runtime.EN.md)

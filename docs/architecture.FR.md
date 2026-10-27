@@ -1,164 +1,84 @@
-<!--
-FR: Décrit les composants et décisions du middleware sans alourdir le guide d’installation.
-EN: Describes middleware components and decisions separately from the installation guide.
-Called by: README and LISEZMOI; Calls: Mermaid diagrams.
--->
+<!-- FR: Décrit les composants actuels de protection. EN: Describes current protection components. Called by: installation guide; Calls: runtime reference. -->
 # Architecture de PareFlux Gate
 
-Ce document décrit le traitement des requêtes, les échanges réseau, le cache et les politiques de panne. Les schémas Mermaid sont rendus sur GitHub.
+[Installation](../LISEZMOI.md) · [English](architecture.EN.md)
 
-[Retour à l’installation](../LISEZMOI.md) · [English](architecture.EN.md)
+Gate s’exécute dans Traefik. CrowdSec est un service distinct et nécessaire :
+son API locale (LAPI) fournit les consignes de blocage. La fonction AppSec de
+CrowdSec examine les requêtes en option. La console PareFlux Control reste
+facultative et ne relaie pas les appels de protection.
 
-## Architecture
+## Composants et échanges
 
 ```mermaid
 flowchart TB
-    client["Client HTTP"]
-
-    subgraph processus["Processus Traefik"]
-        entree["Entrypoint et routeur"]
-
-        subgraph gate["Middleware PareFlux Gate"]
-            identite["Résolution de l'identité source"]
-            politique["Politique de décision et de panne"]
-            cache["PareFlux TTL Cache"]
-            clientappsec["Client AppSec"]
-            marqueur["Marqueur de remédiation"]
-        end
-
-        service["Handler de service Traefik"]
+    client["Visiteur"] --> gate
+    subgraph traefik["Traefik"]
+        gate["PareFlux Gate"]
+        store["Décisions IP/plages stream/alone"]
+        ttl["Cache temporaire live/captcha"]
+        gate <--> store
+        gate <--> ttl
     end
-
-    lapi["CrowdSec LAPI<br/>flux de décisions"]
-    appsec["CrowdSec AppSec<br/>inspection HTTP"]
-    backend["Backend protégé"]
-    journal["Journal d'accès JSON Traefik"]
-
-    client --> entree --> identite --> politique
-    politique <--> cache
-    politique <--> lapi
-    politique --> clientappsec <--> appsec
-    politique --> marqueur
-    politique --> service --> backend
-    entree --> journal
+    lapi["CrowdSec LAPI :8080"] -->|"Synchronisation stream"| store
+    gate <-->|"live / none"| lapi
+    gate <-->|"Inspection facultative"| appsec["CrowdSec AppSec :7422"]
+    gate --> backend["Application protégée"]
+    ttl <-.-> redis["Redis — facultatif"]
+    control["PareFlux Control — console facultative"] -.-> lapi
 ```
 
-## Flux réseau
+Le mode `alone` remplit le même magasin depuis l’API centrale CrowdSec, pas depuis
+LAPI. Il exige des identifiants et un accès au flux ; il ne contient pas les
+blocages locaux. LAPI, AppSec et Redis doivent être joignables par Traefik sur
+un réseau privé, sans port publié sur Internet. Gate utilise une clef dédiée
+montée en lecture seule dans Traefik. Gate n’a pas son propre processus ni de
+port d’écoute distinct.
 
-```mermaid
-flowchart LR
-    internet["Réseau client"]
+## Moteurs et stockage
 
-    subgraph conteneurtraefik["Conteneur Traefik"]
-        tls["Entrypoints Traefik<br/>:80, :443, :8448 optionnel"]
-        gate["Gate s'exécute dans le processus<br/>aucun port d'écoute"]
-    end
+Les routes ayant les mêmes options de moteur CrowdSec résolues partagent un
+moteur, ses tâches de synchronisation et son cache. Une autre adresse, une
+rotation de clef ou un changement de certificat crée un moteur distinct. Le
+moteur effectue une première synchronisation avant d’annoncer un état sain ;
+la libération du dernier contexte arrête ses tâches.
 
-    subgraph front["Réseau interne front"]
-        lapi["CrowdSec LAPI :8080"]
-        appsec["CrowdSec AppSec :7422"]
-        backend["Port du service applicatif"]
-    end
+Le magasin stream/alone conserve les décisions par identifiant et préfixe IPv4
+ou IPv6. Un blocage actif n’est pas évincé pour faire de la place. Le cache TTL
+local ou Redis conserve les résultats temporaires live et captcha ; il ne peut
+pas supprimer les blocages stream. Les décisions persistantes restent dans la
+base CrowdSec, pas dans Gate. Après redémarrage, Gate recharge les décisions.
 
-    secret["Fichier de clef LAPI en lecture seule"]
-    journal["Fichier access.log persistant"]
+## Parcours d’une requête
 
-    internet --> tls --> gate
-    gate -->|"flux de décisions"| lapi
-    gate -->|"requête d'inspection"| appsec
-    gate -->|"requête autorisée via Traefik"| backend
-    secret --> gate
-    tls --> journal
-```
+1. Traefik appelle Gate lorsqu’il est attaché au routeur ou à l’entrypoint.
+2. Gate utilise l’IP du pair réseau ; un en-tête transféré n’est accepté que
+   depuis un proxy explicitement approuvé. Un client exempté par
+   `clientTrustedIps` contourne tous les contrôles.
+3. En `stream`/`alone`, Gate cherche l’IP et les plages correspondantes dans son
+   magasin. En `live`, il consulte le cache puis LAPI si nécessaire ; `none`
+   interroge LAPI à chaque requête. `appsec` ne consulte pas les décisions IP.
+4. Un blocage est prioritaire sur un captcha, même avec des plages superposées.
+   Les erreurs de synchronisation suivent la politique configurée.
+5. Si AppSec est activé, Gate lui transmet les métadonnées et le corps limité,
+   sans les cookies ni `Authorization`. Une requête sans corps reste inspectée.
+6. Si les contrôles l’autorisent, Traefik transmet la requête à l’application.
 
-Le client ne se connecte jamais directement à Gate, LAPI ou AppSec. Le seul
-listener public est un entrypoint Traefik. Les plages d'en-têtes transférés de
-confiance déterminent quand Gate peut tirer l'identité cliente d'un en-tête de
-proxy plutôt que du pair réseau.
+## Pannes et limites
 
-## Flux applicatif
+Les instantanés stream sont complets à chaque interrogation : cela évite de
+perdre des changements pendant un rechargement, au prix d’un transfert plus
+important que des mises à jour incrémentales. L’intervalle par défaut est de
+60 secondes ; le raccourcir augmente le travail de CrowdSec et de Traefik.
 
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant T as Routeur Traefik
-    participant G as PareFlux Gate
-    participant K as Cache TTL
-    participant L as CrowdSec LAPI
-    participant W as CrowdSec AppSec
-    participant A as Application
+Les blocages connus non expirés restent appliqués pendant une panne. Les
+clients inconnus sont refusés après le seuil d’échecs et la grâce, par défaut.
+Une vraie saturation du magasin les refuse immédiatement. AppSec applique sa
+propre politique, sans grâce pour les expirations d’inspection.
 
-    L-->>G: Mise à jour périodique du flux de décisions
-    G->>K: Ajout ou suppression des décisions expirables
-    C->>T: Requête HTTP
-    T->>G: Appel du middleware
-    G->>G: Résolution de l'identité cliente approuvée
-    G->>K: Recherche de la décision
-    alt Ban ou captcha en cache
-        K-->>G: Remédiation
-        G-->>C: Statut configuré et marqueur de remédiation
-    else Aucune remédiation en cache
-        G->>W: Méthode, URI, hôte, en-têtes, IP et corps éligible
-        alt AppSec rejette
-            W-->>G: Statut de blocage
-            G-->>C: Statut configuré et marqueur de remédiation
-        else AppSec autorise ou un fail-open configuré s'applique
-            W-->>G: Autorisation
-            G->>A: Appel du handler Traefik suivant
-            A-->>C: Réponse applicative
-        end
-    end
-```
-
-## Flux de décision de ban
-
-```mermaid
-flowchart TD
-    requete["Traefik appelle Gate"]
-    actif{"Gate est-il activé ?"}
-    identite["Résoudre le pair réseau ou l'identité transférée approuvée"]
-    identiteok{"Identité valide ?"}
-    confiance{"IP cliente explicitement approuvée ?"}
-    mode{"Le mode de décision utilise-t-il CrowdSec ?"}
-    recherche["Chercher l'IP dans le cache TTL ou Redis"]
-    trouve{"Valeur en cache ?"}
-    remediation["Retourner la remédiation ban ou captcha<br/>et le marqueur interne"]
-    flux{"Le flux de décisions est-il sain ?"}
-    ferme{"Fail-closed du flux explicitement activé ?"}
-    technique["Retourner un rejet technique"]
-    appsec{"AppSec est-il activé ?"}
-    inspection["Envoyer métadonnées et corps éligible à AppSec"]
-    resultat{"Résultat AppSec ?"}
-    politiquewaf{"La politique de panne bloque-t-elle cette erreur ?"}
-    suivant["Appeler le handler Traefik suivant"]
-
-    requete --> actif
-    actif -->|Non| suivant
-    actif -->|Oui| identite --> identiteok
-    identiteok -->|Non| technique
-    identiteok -->|Oui| confiance
-    confiance -->|Oui| suivant
-    confiance -->|Non| mode
-    mode -->|Non ou AppSec seul| appsec
-    mode -->|Oui| recherche --> trouve
-    trouve -->|Ban ou captcha| remediation
-    trouve -->|Autorisation explicite| appsec
-    trouve -->|Absent| flux
-    flux -->|Sain ou mode sans flux| appsec
-    flux -->|Indisponible| ferme
-    ferme -->|Oui| technique
-    ferme -->|Non, configuration explicite| appsec
-    appsec -->|Non| suivant
-    appsec -->|Oui| inspection --> resultat
-    resultat -->|Autorisation| suivant
-    resultat -->|Blocage| remediation
-    resultat -->|Indisponible ou erreur interne| politiquewaf
-    politiquewaf -->|Bloquer| technique
-    politiquewaf -->|Fail-open| suivant
-```
-
-Les bans en cache restent appliqués pendant une panne LAPI. Lors d'un défaut de
-cache, la politique de flux est fermée par défaut ;
-`crowdsecStreamUnreachableBlock: false` active explicitement le mode ouvert. Les
-politiques d'indisponibilité et d'erreur interne AppSec se configurent
-indépendamment.
+Voir les [limites et politiques précises](security-runtime.FR.md), la
+[référence des options](configuration.FR.md) et la
+[navigation facultative du dashboard](dashboard-menu.FR.md). Les journaux
+Traefik peuvent alimenter la détection CrowdSec après configuration d’une
+acquisition ; les réponses déjà bloquées doivent être distinguées au moyen du
+marqueur de remédiation pour éviter une boucle de détection.

@@ -57,7 +57,27 @@ const (
 )
 
 // Config the plugin configuration.
+// AppsecBodyException authorizes partial body inspection only for a named route and methods.
+// FR: Les domaines sont configurés par le déploiement, jamais intégrés au plugin.
+// EN: Domains are deployment inputs, never compiled into the plugin.
+// Called by: Config; Calls: none.
+type AppsecBodyException struct {
+	Host       string   `json:"host"`
+	PathRegexp string   `json:"pathRegexp"`
+	Methods    []string `json:"methods"`
+}
+
 type Config struct {
+	CrowdsecAppsecReadTimeoutSeconds     int64                 `json:"crowdsecAppsecReadTimeoutSeconds,omitempty"`
+	CrowdsecAppsecMaxConcurrentPerClient int64                 `json:"crowdsecAppsecMaxConcurrentPerClient,omitempty"`
+	CrowdsecAppsecBodyExceptions         []AppsecBodyException `json:"crowdsecAppsecBodyExceptions,omitempty"`
+
+	DashboardDiscoveryKey                      string   `json:"dashboardDiscoveryKey,omitempty"`
+	DashboardDiscoveryKeyFile                  string   `json:"dashboardDiscoveryKeyFile,omitempty"`
+	DashboardRegistrationAllowed               bool     `json:"dashboardRegistrationAllowed,omitempty"`
+	CrowdsecAppsecBodyLimitAction              string   `json:"crowdsecAppsecBodyLimitAction,omitempty"`
+	StreamDecisionCapacity                     int64    `json:"streamDecisionCapacity,omitempty"`
+	FailureGraceSeconds                        int64    `json:"failureGraceSeconds,omitempty"`
 	DashboardHealthURL                         string   `json:"dashboardHealthURL,omitempty"`
 	DashboardIntegration                       bool     `json:"dashboardIntegration,omitempty"`
 	DashboardLinkURL                           string   `json:"dashboardLinkURL,omitempty"`
@@ -146,59 +166,59 @@ func contains(source []string, target string) bool {
 // New creates the default plugin configuration.
 func New() *Config {
 	return &Config{
-		Enabled:                        false,
-		LogLevel:                       LogINFO,
-		LogFormat:                      "common",
-		LogFilePath:                    "",
-		CrowdsecMode:                   LiveMode,
-		CrowdsecAppsecEnabled:          false,
-		CrowdsecAppsecFailureBlock:     true,
-		CrowdsecAppsecUnreachableBlock: true,
-		CrowdsecAppsecBodyLimit:        1048576,
-		CrowdsecAppsecBodyExcludedContentTypes: []string{
-			"application/octet-stream",
-			"image/",
-			"audio/",
-			"video/",
-		},
-		CrowdsecAppsecTimeoutSeconds:    3,
-		CrowdsecAppsecScheme:            "",
-		CrowdsecAppsecHost:              "crowdsec:7422",
-		CrowdsecAppsecPath:              "/",
-		CrowdsecAppsecKey:               "",
-		CrowdsecAppsecTLSInsecureVerify: false,
-		CrowdsecLapiScheme:              HTTP,
-		CrowdsecLapiHost:                "crowdsec:8080",
-		CrowdsecLapiPath:                "/",
-		CrowdsecLapiKey:                 "",
-		CrowdsecLapiTLSInsecureVerify:   false,
-		CrowdsecStreamUnreachableBlock:  true,
-		UpdateIntervalSeconds:           60,
-		MetricsUpdateIntervalSeconds:    600,
-		UpdateMaxFailure:                0,
-		DefaultDecisionSeconds:          60,
-		RemediationStatusCode:           http.StatusForbidden,
-		HTTPTimeoutSeconds:              10,
-		CaptchaProvider:                 "",
-		CaptchaCustomJsURL:              "",
-		CaptchaCustomValidateURL:        "",
-		CaptchaCustomKey:                "",
-		CaptchaCustomResponse:           "",
-		CaptchaSiteKey:                  "",
-		CaptchaSecretKey:                "",
-		CaptchaGracePeriodSeconds:       1800,
-		CaptchaHTMLFilePath:             "/captcha.html",
-		BanHTMLFilePath:                 "",
-		TraceHeadersCustomName:          "",
-		RemediationHeadersCustomName:    "",
-		ForwardedHeadersCustomName:      "X-Forwarded-For",
-		ForwardedHeadersTrustedIPs:      []string{},
-		ClientTrustedIPs:                []string{},
-		RedisCacheEnabled:               false,
-		RedisCacheHost:                  "redis:6379",
-		RedisCachePassword:              "",
-		RedisCacheDatabase:              "",
-		RedisCacheUnreachableBlock:      true,
+		Enabled:                                false,
+		LogLevel:                               LogINFO,
+		LogFormat:                              "common",
+		LogFilePath:                            "",
+		CrowdsecMode:                           LiveMode,
+		CrowdsecAppsecEnabled:                  false,
+		CrowdsecAppsecFailureBlock:             true,
+		CrowdsecAppsecUnreachableBlock:         true,
+		CrowdsecAppsecBodyLimit:                1048576,
+		CrowdsecAppsecBodyLimitAction:          "reject",
+		CrowdsecAppsecBodyExcludedContentTypes: []string{},
+		CrowdsecAppsecTimeoutSeconds:           3,
+		CrowdsecAppsecReadTimeoutSeconds:       60,
+		CrowdsecAppsecMaxConcurrentPerClient:   4,
+		CrowdsecAppsecScheme:                   "",
+		CrowdsecAppsecHost:                     "crowdsec:7422",
+		CrowdsecAppsecPath:                     "/",
+		CrowdsecAppsecKey:                      "",
+		CrowdsecAppsecTLSInsecureVerify:        false,
+		CrowdsecLapiScheme:                     HTTP,
+		CrowdsecLapiHost:                       "crowdsec:8080",
+		CrowdsecLapiPath:                       "/",
+		CrowdsecLapiKey:                        "",
+		CrowdsecLapiTLSInsecureVerify:          false,
+		CrowdsecStreamUnreachableBlock:         true,
+		UpdateIntervalSeconds:                  60,
+		MetricsUpdateIntervalSeconds:           600,
+		UpdateMaxFailure:                       3,
+		StreamDecisionCapacity:                 262144,
+		FailureGraceSeconds:                    60,
+		DefaultDecisionSeconds:                 60,
+		RemediationStatusCode:                  http.StatusForbidden,
+		HTTPTimeoutSeconds:                     10,
+		CaptchaProvider:                        "",
+		CaptchaCustomJsURL:                     "",
+		CaptchaCustomValidateURL:               "",
+		CaptchaCustomKey:                       "",
+		CaptchaCustomResponse:                  "",
+		CaptchaSiteKey:                         "",
+		CaptchaSecretKey:                       "",
+		CaptchaGracePeriodSeconds:              1800,
+		CaptchaHTMLFilePath:                    "/captcha.html",
+		BanHTMLFilePath:                        "",
+		TraceHeadersCustomName:                 "",
+		RemediationHeadersCustomName:           "",
+		ForwardedHeadersCustomName:             "X-Forwarded-For",
+		ForwardedHeadersTrustedIPs:             []string{},
+		ClientTrustedIPs:                       []string{},
+		RedisCacheEnabled:                      false,
+		RedisCacheHost:                         "redis:6379",
+		RedisCachePassword:                     "",
+		RedisCacheDatabase:                     "",
+		RedisCacheUnreachableBlock:             true,
 	}
 }
 
@@ -457,8 +477,42 @@ func validateParamsRequired(config *Config) error {
 			return errors.New(key + ": cannot be less than 1")
 		}
 	}
+	if len(config.CrowdsecAppsecBodyExceptions) > 32 {
+		return errors.New("too many AppSec body exceptions")
+	}
+	for _, rule := range config.CrowdsecAppsecBodyExceptions {
+		if rule.Host == "" || strings.ContainsAny(rule.Host, "/:* \x09\x0d\x0a\x5c") || len(rule.PathRegexp) > 2048 || !strings.HasPrefix(rule.PathRegexp, "^") || len(rule.Methods) == 0 {
+			return errors.New("invalid AppSec route exception")
+		}
+		if _, err := regexp.Compile(rule.PathRegexp); err != nil {
+			return errors.New("invalid AppSec route expression")
+		}
+		for _, method := range rule.Methods {
+			if method != "POST" && method != "PUT" && method != "PATCH" {
+				return errors.New("AppSec upload exceptions require POST, PUT or PATCH")
+			}
+		}
+	}
+	if config.CrowdsecAppsecReadTimeoutSeconds < 0 || config.CrowdsecAppsecReadTimeoutSeconds > 86400 {
+		return errors.New("AppSec read timeout must be between 0 and 86400 seconds")
+	}
+	if config.CrowdsecAppsecMaxConcurrentPerClient < 0 || config.CrowdsecAppsecMaxConcurrentPerClient > 64 {
+		return errors.New("AppSec client concurrency must be between 0 and 64")
+	}
+	if config.StreamDecisionCapacity < 0 || config.StreamDecisionCapacity > 1000000 {
+		return errors.New("streamDecisionCapacity must be between 0 (default) and 1000000")
+	}
+	if config.FailureGraceSeconds < 0 || config.FailureGraceSeconds > 3600 {
+		return errors.New("failureGraceSeconds must be between 0 and 3600")
+	}
 	if config.UpdateMaxFailure < -1 {
 		return errors.New("UpdateMaxFailure: cannot be less than -1")
+	}
+	if config.CrowdsecAppsecBodyLimitAction != "" && config.CrowdsecAppsecBodyLimitAction != "reject" && config.CrowdsecAppsecBodyLimitAction != "partial" {
+		return errors.New("crowdsecAppsecBodyLimitAction must be reject or partial")
+	}
+	if config.CrowdsecAppsecBodyLimit > 16<<20 {
+		return errors.New("AppSec body limit cannot exceed 16 MiB")
 	}
 	if config.CrowdsecAppsecBodyLimit < 0 {
 		return errors.New("CrowdsecAppsecBodyLimit: cannot be less than 0")

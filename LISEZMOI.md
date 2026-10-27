@@ -45,27 +45,36 @@ CrowdSec n’est pas embarqué dans le plugin.**
 
 | Besoin | Ce que fait Gate |
 | --- | --- |
-| Appliquer les décisions CrowdSec | Bans et remédiations captcha fournis par LAPI, ou flux communautaire en mode `alone` |
-| Bloquer une attaque HTTP | Inspection CrowdSec AppSec, activée séparément des décisions IP |
-| Limiter les appels à LAPI | Modes `stream` et `live`, cache TTL local ou Redis |
+| Appliquer les consignes de blocage | Refuser une IP ou présenter un captcha lorsque CrowdSec le demande |
+| Examiner les requêtes web | Demander, en option, à CrowdSec AppSec de détecter les requêtes malveillantes avant transmission |
+| Éviter une interrogation de CrowdSec par visiteur | Synchroniser les consignes en mémoire ou conserver temporairement les résultats individuels |
 | Identifier le visiteur derrière un proxy | En-tête transféré accepté uniquement depuis un proxy explicitement approuvé |
 | Adapter les refus | Code HTTP, page HTML de blocage, fournisseur et page captcha configurables |
 | Diagnostiquer les blocages | Journaux et marqueur de remédiation configurable dans la réponse et la requête interne |
 
+Une **décision** est une consigne de blocage avec une cible (IP ou plage réseau)
+et une expiration. **LAPI** désigne l’API locale de CrowdSec : le service que
+Gate interroge pour obtenir ces consignes, généralement sur le port 8080. Un
+**bouncer** est un composant qui les applique ; Gate en est un. **TTL** désigne
+la durée de conservation d’une entrée temporaire. Redis est un service de cache
+externe facultatif.
+
 CrowdSec analyse les journaux et produit les décisions. Gate les applique ; il
 n’installe pas de scénarios ni ne remplace le moteur CrowdSec. Les décisions
 persistantes restent dans LAPI ; le cache local est perdu au redémarrage.
-L’accès à un flux communautaire dépend de l’inscription et des droits CrowdSec.
+Le flux communautaire facultatif fournit des consignes CrowdSec pour des
+menaces observées ailleurs. Son accès dépend de l’inscription et des flux activés
+pour ce compte CrowdSec ; il n’est pas nécessaire à la détection locale.
 
 ## Choisir un mode
 
 | Mode | Source des décisions | Cache | Usage |
 | --- | --- | --- | --- |
-| `stream` | CrowdSec LAPI, actualisé toutes les 60 secondes par défaut | Local ou Redis | Point de départ conseillé pour appliquer les décisions LAPI avec peu de travail par requête |
+| `stream` | CrowdSec LAPI, instantané complet toutes les 60 secondes par défaut | Magasin IP/plages en mémoire, sans éviction des blocages actifs | Point de départ conseillé pour appliquer les décisions LAPI avec peu de travail par requête |
 | `live` | LAPI si l’IP manque dans le cache | Local ou Redis ; résultat conservé au plus 60 secondes par défaut | Interroger les IP à leur arrivée |
 | `none` | LAPI à chaque requête | Pas de cache de consultation des décisions IP | Exiger une réponse LAPI pour chaque requête ; ce mode ne **désactive pas** la protection |
 | `appsec` | CrowdSec AppSec uniquement | Pas de consultation des décisions IP | Inspecter HTTP lorsque les décisions IP sont déjà appliquées ailleurs ; définir `crowdsecAppsecEnabled: true` |
-| `alone` | API centrale CrowdSec, toutes les deux heures | Local ou Redis | Consommer le flux communautaire avec des identifiants CAPI valides ; n’inclut pas les décisions LAPI locales |
+| `alone` | API centrale CrowdSec, toutes les deux heures | Même magasin IP/plages que stream | Consommer le flux communautaire avec des identifiants CAPI valides ; n’inclut pas les décisions LAPI locales |
 
 AppSec peut compléter les modes de décisions IP en définissant
 `crowdsecAppsecEnabled: true`. Le mode par défaut est `live`, mais l’exemple
@@ -73,16 +82,37 @@ ci-dessous choisit explicitement `stream`.
 
 ## Installation
 
-L’exemple public utilise la version **v0.1.16**. La configuration statique
+L’exemple public utilise la version **v0.1.24**. La configuration statique
 charge le plugin au démarrage ; la configuration dynamique l’active et le
 rattache aux routes à protéger. Déclarer le plugin seul ne protège aucune route.
 
 ### 1. Préparer CrowdSec
 
-Disposer d’une LAPI joignable depuis Traefik et d’une clef de bouncer dédiée,
-créée avec `cscli bouncers add pareflux-traefik`. Monter cette clef en lecture
-seule **dans le conteneur Traefik** sous `/run/secrets/crowdsec-bouncer.key`.
-Le compte exécutant Traefik doit pouvoir la lire.
+Gate se connecte **directement à CrowdSec**, sans passer par la console PareFlux.
+Utiliser l’adresse de **l’API locale CrowdSec**, pas celle de son site web ni de
+la console. Par exemple, `crowdsecLapiHost: crowdsec:8080` suppose que Traefik
+résout le service `crowdsec` et atteint son port 8080 sur un réseau privé partagé.
+Pour un moteur distant, indiquer son nom privé joignable et configurer HTTPS.
+Ne pas exposer cette API publiquement.
+
+Sur l’hôte CrowdSec, créer une clef dédiée :
+
+```bash
+sudo cscli bouncers add pareflux-traefik
+# Avec Docker : docker compose exec crowdsec cscli bouncers add pareflux-traefik
+```
+
+La commande affiche une clef API secrète. La conserver en lieu sûr et la monter en lecture seule **dans le conteneur Traefik** sous `/run/secrets/crowdsec-bouncer.key`.
+Le compte exécutant Traefik doit pouvoir la lire. Pour un service Compose
+existant, enregistrer uniquement la clef affichée dans
+`./secrets/crowdsec-bouncer.key` (hors Git), puis ajouter ce montage :
+```yaml
+services:
+  traefik:
+    volumes:
+      - ./secrets/crowdsec-bouncer.key:/run/secrets/crowdsec-bouncer.key:ro
+```
+
 
 Pour AppSec, CrowdSec doit aussi disposer d’un composant AppSec en écoute sur
 `:7422`, de ses acquisitions et règles. Sinon, commencer avec
@@ -98,7 +128,7 @@ experimental:
   plugins:
     parefluxgate:
       moduleName: github.com/vandman/pareflux-traefik-gate
-      version: v0.1.16
+      version: v0.1.24
 ```
 
 Redémarrer Traefik après un changement de version du plugin. Utiliser le
@@ -137,8 +167,7 @@ http:
           crowdsecMode: stream
           crowdsecLapiHost: crowdsec:8080
           crowdsecLapiKeyFile: /run/secrets/crowdsec-bouncer.key
-          crowdsecAppsecEnabled: true
-          crowdsecAppsecHost: crowdsec:7422
+          crowdsecAppsecEnabled: false
           remediationHeadersCustomName: X-Pareflux-Remediation
 ```
 
@@ -161,8 +190,7 @@ services:
       traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecMode: stream
       traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecLapiHost: crowdsec:8080
       traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecLapiKeyFile: /run/secrets/crowdsec-bouncer.key
-      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecAppsecEnabled: "true"
-      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecAppsecHost: crowdsec:7422
+      traefik.http.middlewares.pareflux-gate.plugin.parefluxgate.crowdsecAppsecEnabled: "false"
 ```
 
 Compléter avec les labels habituels du routeur, de l’entrypoint et du service.
@@ -170,18 +198,53 @@ La clef est toujours un fichier monté dans Traefik, jamais un secret dans les
 labels. Pour protéger plusieurs applications, rattacher le même middleware à
 leurs routeurs.
 
+### En option : examiner les requêtes avec AppSec
+
+Faire d’abord fonctionner le blocage IP. Activer ensuite le composant AppSec
+distinct de CrowdSec sur le port 7422, avec ses acquisitions et collections de
+règles. L’[exemple d’acquisition AppSec](examples/compose/appsec.yaml) et le
+réglage `COLLECTIONS` de Compose montrent ce montage. Voir aussi le
+[guide AppSec CrowdSec](https://docs.crowdsec.net/docs/appsec/quickstart/traefik/).
+Ne pas reprendre le nom de module ou la version d’un autre plugin de ce guide.
+
+Ajouter ces options au **middleware de protection existant** :
+
+```yaml
+crowdsecAppsecEnabled: true
+crowdsecAppsecHost: crowdsec:7422
+crowdsecAppsecBodyLimit: 1048576
+```
+
+La clef AppSec hérite de la clef LAPI dans les modes LAPI sauf remplacement
+explicite. AppSec examine les métadonnées et le corps ; les cookies et
+`Authorization` sont volontairement exclus. Un corps dépassant **1 Mio est
+refusé par défaut avec HTTP 413**. Prévoir des
+[exceptions explicites d’envoi](docs/security-runtime.FR.md#inspection-appsec)
+avant activation sur les applications acceptant de gros fichiers. Le budget
+d’inspection est de 3 secondes ; garder un `readTimeout` fini sur l’entrypoint
+Traefik, par exemple 60 secondes, cohérent avec `crowdsecAppsecReadTimeoutSeconds`.
+
 ### Démonstration complète
 
 L’[exemple Compose](https://github.com/vandman/pareflux-traefik-gate/tree/main/examples/compose)
-contient Traefik, CrowdSec, AppSec et Whoami. Après avoir récupéré le dépôt :
+contient Traefik, CrowdSec, AppSec et Whoami. Récupérer une fois le dépôt public,
+puis lancer la démonstration :
 
 ```bash
-cd examples/compose
+git clone https://github.com/vandman/pareflux-traefik-gate.git
+cd pareflux-traefik-gate/examples/compose
 docker compose up --detach --wait
 curl --header 'Host: pareflux.localhost' http://127.0.0.1:18080/
 # Supprimer uniquement cette pile de démonstration et ses données :
 docker compose down --volumes
 ```
+
+La démonstration active explicitement AppSec et désactive les échanges avec
+l’API en ligne CrowdSec (`DISABLE_ONLINE_API: "true"`) pour ne pas partager le
+trafic de test. Elle ne configure pas l’acquisition des journaux d’accès Traefik :
+la détection automatique dans les journaux demande ce réglage supplémentaire.
+La synchronisation toutes les secondes sert à la démonstration ; commencer
+avec le défaut de 60 secondes en production.
 
 Cette démonstration écoute uniquement sur la boucle locale. Sa clef intégrée
 est jetable ; elle n’est pas destinée à la production. En production, utiliser
@@ -226,21 +289,26 @@ CrowdSec n’est pas automatiquement disponible ici.
 
 | Panne | Politique par défaut | Réglage |
 | --- | --- | --- |
-| Flux LAPI/CAPI déclaré en échec | Bloquer les IP absentes du cache ; les bans en cache restent appliqués | `crowdsecStreamUnreachableBlock: true` |
-| AppSec inaccessible | Bloquer la requête | `crowdsecAppsecUnreachableBlock: true` |
-| Erreur HTTP interne AppSec | Bloquer la requête | `crowdsecAppsecFailureBlock: true` |
-| Redis inaccessible si utilisé | Bloquer la requête | `redisCacheUnreachableBlock: true` |
+| Flux LAPI/CAPI déclaré en échec | Après le seuil d’échecs et la grâce, refuser les IP sans décision connue ; les blocages non expirés restent appliqués | `crowdsecStreamUnreachableBlock: true` |
+| Échec d’établissement de connexion AppSec | Refuser après la grâce de panne admissible | `crowdsecAppsecUnreachableBlock: true` |
+| AppSec HTTP 502/503/504 | Refuser après la grâce de panne admissible | `crowdsecAppsecFailureBlock: true` |
+| Consultation Redis nécessaire mais indisponible | Refuser la requête nécessitant cette consultation | `redisCacheUnreachableBlock: true` |
 
 Passer une de ces options à `false` privilégie la disponibilité pour ce cas
 précis. Les modes `live` et `none` refusent aussi la requête si leur interrogation
-LAPI échoue. Le compteur `updateMaxFailure` concerne la santé du flux ; il ne
-remplace pas ces politiques de panne.
+LAPI échoue. Le flux tolère par défaut 3 échecs consécutifs et une grâce de 60 secondes,
+après une première synchronisation réussie. Sans celle-ci, le démarrage reste
+bloquant. La grâce AppSec ne couvre que les échecs de connexion et les HTTP
+502/503/504 après inspection réussie ; les expirations d’inspection et HTTP 500
+restent bloquants. Dépasser `streamDecisionCapacity` refuse immédiatement les
+clients inconnus. Voir les [seuils et limites précis](docs/security-runtime.FR.md).
 
 Les proxies approuvés et les clients exemptés ont des rôles différents :
 `forwardedHeadersTrustedIps` permet de lire l’IP d’origine ; `clientTrustedIps`
 contourne la protection pour l’IP résolue. Ne pas y placer indistinctement des
-réseaux publics. Le cache et les synchronisations sont partagés dans le processus
-Traefik ; ne pas utiliser plusieurs instances comme moteurs CrowdSec isolés.
+réseaux publics. Un routeur NAT ne fournit pas d’en-têtes d’identité HTTP. Les
+routes ayant la même configuration CrowdSec résolue partagent un moteur ; une
+adresse, des identifiants ou des options de moteur différents créent un autre moteur.
 
 ## Dépannage
 
@@ -276,8 +344,9 @@ le rôle de chaque stockage :
 
 | Stockage | Utilisé par | Rôle |
 | --- | --- | --- |
-| Cache TTL dans le processus | PareFlux Gate | Cache éphémère par défaut pour un processus Traefik |
-| Redis | PareFlux Gate | Cache éphémère partagé optionnel entre plusieurs processus Traefik |
+| Magasin de décisions en mémoire | PareFlux Gate | Décisions IP et plages stream/alone actives, sans éviction |
+| Cache TTL en mémoire | PareFlux Gate | Résultats temporaires des consultations live et captchas par moteur |
+| Redis | PareFlux Gate | Cache live/captcha partagé entre configurations identiques ; ne stocke pas les blocages stream |
 | SQLite | CrowdSec LAPI | Stockage persistant par défaut pour une installation simple sur un nœud |
 | PostgreSQL ou MariaDB | CrowdSec LAPI | Stockage LAPI persistant adapté aux installations plus importantes ou répliquées |
 
@@ -288,6 +357,21 @@ Les commandes ci-dessous fusionnent deux fichiers Compose. Le fichier
 `docker-compose.yml` fournit Traefik, Whoami, CrowdSec et AppSec ; le fichier
 explicitement nommé `compose.override.*` ajoute la base choisie et configure
 CrowdSec pour l'utiliser.
+
+Pour un cache partagé Redis, utiliser la surcharge Redis. Elle choisit `live`
+pour utiliser réellement le cache lors des consultations individuelles ; Redis
+ne remplace pas le magasin stream. Le fichier de mot de passe fourni est jetable.
+Redis n’expose aucun port sur l’hôte.
+
+```bash
+cd examples/compose
+docker compose -f docker-compose.yml -f compose.override.redis.yml up --detach --wait
+curl --header 'Host: pareflux.localhost' http://127.0.0.1:18080/
+docker compose -f docker-compose.yml -f compose.override.redis.yml down --volumes
+```
+
+Redis est indépendant de Traefik, mais cette surcharge configure son utilisation
+par Gate. Ce client utilise TCP sans TLS ; le garder sur un réseau privé de confiance.
 
 Pour lancer l'exemple complet avec PostgreSQL :
 
@@ -329,12 +413,12 @@ machines, clefs de remédiation, alertes ou décisions existantes.
 
 ```bash
 go test -race ./...
-go test -bench=. -benchmem ./...
 go mod vendor
+./scripts/patch-ttl-cache-vendor.sh
 ```
 
-Chaque version doit aussi être chargée comme plugin local dans l'image Traefik
-épinglée et réussir les benchmarks de requêtes de bout en bout.
+Chaque version doit aussi être chargée comme plugin local dans l'image Traefik épinglée et passer les tests intégrés de requêtes, blocages et rechargements.
+Voir la [méthode de mesure](BENCHMARKS.FR.md) pour les performances.
 
 ## Dépôts et versions publiques
 
@@ -374,3 +458,5 @@ publication. Les tags sont créés depuis le poste opérateur ; le push Git par 
 token est désactivé. Déploiements, administration de l’identité et maintenance
 des hôtes runners restent pilotés depuis le poste. Aucune clé SSH de production,
 aucun kubeconfig ni identité OpenBao de production n’entre dans ces jobs.
+
+[Protection, limites et politiques de panne](docs/security-runtime.FR.md).

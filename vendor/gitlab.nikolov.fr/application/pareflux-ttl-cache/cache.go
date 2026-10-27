@@ -333,13 +333,13 @@ func (c *Cache) purgeExpiredLocked(now int64, limit int) int {
 
 // /////////////////////////////////////////////////////////////////////////////
 // evictOldestLocked
-// FR: Retire l'entrée la plus ancienne via la tête de file lorsque l'appelant
+// FR: Cherche une entrée expirée parmi 64 positions avant d'évincer la plus ancienne.
 //
-//	détient le verrou d'écriture, sans parcourir le cache.
+//	La borne protège les insertions contre un balayage complet coûteux.
 //
-// EN: Removes the oldest entry from the queue head while the caller owns the
+// EN: Looks for an expired entry within 64 positions before evicting the oldest.
 //
-//	write lock, without scanning the cache.
+//	The bound prevents costly full-cache scans on insertion.
 //
 // Called by: Cache.Set
 // Calls: list.List.Front, list.List.Remove
@@ -348,6 +348,16 @@ func (c *Cache) evictOldestLocked() {
 	oldest := c.order.Front()
 	if oldest == nil {
 		return
+	}
+	now := c.nowUnixNano()
+	candidate := oldest
+	for inspected := 0; candidate != nil && inspected < 64; inspected++ {
+		key, valid := candidate.Value.(string)
+		if item, present := c.items[key]; valid && present && item.expiresAt >= 0 && item.expiresAt <= now {
+			oldest = candidate
+			break
+		}
+		candidate = candidate.Next()
 	}
 	key, valid := oldest.Value.(string)
 	if valid {

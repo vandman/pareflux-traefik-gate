@@ -10,6 +10,7 @@ import (
 	"github.com/vandman/pareflux-traefik-gate/pkg/configuration"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -123,22 +124,28 @@ func TestDashboardIntegrationHealthAndExchange(t *testing.T) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Write([]byte("<body>Native Traefik</body>"))
 	})
-	handler, err := newDashboardIntegration(next, "health.example", "/pareflux/", health.URL)
+	handler, err := newDashboardIntegration(next, "health.example", "/pareflux/", health.URL, strings.Repeat("k", 32), true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	menu := handler.(*dashboardMenu)
 	public := httptest.NewRecorder()
 	menu.ServeHTTP(public, httptest.NewRequest("GET", "https://health.example/dashboard/", nil))
-	if !strings.Contains(public.Body.String(), `data-state="available"`) {
+	if strings.Contains(public.Body.String(), `data-state="available"`) {
 		t.Fatal(public.Body.String())
 	}
-	private, err := newDashboardIntegration(next, "health.example", "/pareflux/", health.URL)
+	private, err := newDashboardIntegration(next, "health.example", "/pareflux/", health.URL, strings.Repeat("k", 32), true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	registration := httptest.NewRecorder()
-	private.ServeHTTP(registration, httptest.NewRequest("POST", "http://private/.well-known/pareflux", strings.NewReader(`{"control_url":"https://health.example/pareflux/","nonce":"0123456789abcdef"}`)))
+	requestBody := `{"control_url":"https://health.example/pareflux/","nonce":"0123456789abcdef"}`
+	signed := httptest.NewRequest("POST", "http://private/.well-known/pareflux", strings.NewReader(requestBody))
+	signed.RemoteAddr = "127.0.0.1:1234"
+	stamp := strconv.FormatInt(time.Now().Unix(), 10)
+	signed.Header.Set("X-Pareflux-Time", stamp)
+	signed.Header.Set("X-Pareflux-Signature", discoverySignature(strings.Repeat("k", 32), "request", stamp, []byte(requestBody)))
+	private.ServeHTTP(registration, signed)
 	if registration.Code != 200 || !strings.Contains(registration.Body.String(), `"dashboard_url":"https://health.example/dashboard/"`) {
 		t.Fatal(registration.Code, registration.Body.String())
 	}
@@ -155,8 +162,8 @@ func TestDashboardIntegrationHealthAndExchange(t *testing.T) {
 	}
 	bad := httptest.NewRecorder()
 	private.ServeHTTP(bad, httptest.NewRequest("POST", "http://private/.well-known/pareflux", strings.NewReader(`{"control_url":"https://other.example/pareflux/","nonce":"0123456789abcdef"}`)))
-	if bad.Code != 200 {
-		t.Fatal("private URL change was rejected")
+	if bad.Code != 403 {
+		t.Fatal("unsigned discovery was accepted")
 	}
 }
 
@@ -175,13 +182,8 @@ func TestDashboardProtectionProof(t *testing.T) {
 	if menu.status(req).Protected {
 		t.Fatal("client forged protection")
 	}
-	previous := atomic.LoadInt64(&lastStreamSuccess)
-	defer atomic.StoreInt64(&lastStreamSuccess, previous)
-	previousHealthy := atomic.LoadUint32(&isCrowdsecStreamHealthy)
-	defer atomic.StoreUint32(&isCrowdsecStreamHealthy, previousHealthy)
-	atomic.StoreInt64(&lastStreamSuccess, time.Now().Unix())
-	atomic.StoreUint32(&isCrowdsecStreamHealthy, 1)
-	proof := &gateRequestProof{gate: &Bouncer{enabled: true, crowdsecMode: configuration.StreamMode, updateInterval: 15}}
+	engine := &engineState{lastStreamSuccess: time.Now().Unix(), isCrowdsecStreamHealthy: 1}
+	proof := &gateRequestProof{gate: &Bouncer{engine: engine, enabled: true, crowdsecMode: configuration.StreamMode, updateInterval: 15}}
 	req = req.WithContext(context.WithValue(req.Context(), gateContextKey{}, proof))
 	if !menu.status(req).Protected {
 		t.Fatal("active protection not recognized")
@@ -194,8 +196,55 @@ func TestDashboardProtectionProof(t *testing.T) {
 	if !menu.status(req).Protected {
 		t.Fatal("confirmed AppSec missing")
 	}
-	atomic.StoreInt64(&lastStreamSuccess, time.Now().Add(-time.Hour).Unix())
+	atomic.StoreInt64(&engine.lastStreamSuccess, time.Now().Add(-time.Hour).Unix())
 	if menu.status(req).Protected {
 		t.Fatal("stale engine shown as protected")
+	}
+}
+
+// TestDashboardProbeDoesNotHoldRegistrationLock keeps navigation and replacement announcements independent.
+// FR: La sonde lente ne sérialise pas le dashboard et son résultat périmé ne remplace pas le nouveau.
+// EN: A slow probe does not serialize dashboard loads and its stale result cannot overwrite the replacement.
+// Called by: go test; Calls: readiness HTTP fixtures and registration state.
+func TestDashboardProbeDoesNotHoldRegistrationLock(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release
+		w.Write([]byte(`{"status":"not-ready"}`))
+	}))
+	defer upstream.Close()
+	fresh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{"status":"ready"}`)) }))
+	defer fresh.Close()
+	state := &dashboardRegistration{healthURL: upstream.URL, expires: time.Now().Add(time.Minute)}
+	menu := &dashboardMenu{registration: state}
+	done := make(chan bool, 1)
+	go func() { done <- menu.ready(context.Background()) }()
+	<-entered
+	started := time.Now()
+	for i := 0; i < 10; i++ {
+		if menu.ready(context.Background()) {
+			t.Error("unverified health reported ready")
+		}
+	}
+	if time.Since(started) > 100*time.Millisecond {
+		t.Error("loads blocked on health probe")
+	}
+	state.mu.Lock()
+	state.healthURL = fresh.URL
+	state.healthGeneration++
+	state.healthPending = false
+	state.healthAt = time.Time{}
+	state.mu.Unlock()
+	if !menu.ready(context.Background()) {
+		t.Error("new registration could not probe independently")
+	}
+	close(release)
+	if <-done {
+		t.Error("stale probe reported ready")
+	}
+	if !menu.ready(context.Background()) {
+		t.Error("stale probe overwrote new result")
 	}
 }

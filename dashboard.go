@@ -7,15 +7,21 @@ package pareflux_traefik_gate
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"html"
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,11 +32,14 @@ const dashboardBodyLimit = 2 << 20
 // EN: This separate instance never replaces the existing protection middleware.
 // Called by: New; Calls: dashboardResponse.
 type dashboardMenu struct {
-	next         http.Handler
-	host         string
-	link         string
-	healthURL    string
-	registration *dashboardRegistration
+	next              http.Handler
+	host              string
+	link              string
+	healthURL         string
+	registration      *dashboardRegistration
+	discoveryKey      string
+	allowRegistration bool
+	engineKey         string
 }
 
 // newDashboardMenu validates an exact host and a safe relative or HTTPS target.
@@ -89,8 +98,9 @@ func (m *dashboardMenu) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	link := m.link
 	warning := false
 	if m.registration != nil {
+		link = ""
 		m.registration.mu.Lock()
-		if m.registration.link != "" {
+		if m.registration.link != "" && time.Now().Before(m.registration.expires) {
 			link = m.registration.link
 		}
 		m.registration.mu.Unlock()
@@ -225,12 +235,15 @@ func (w *dashboardResponse) finish(link string, warning bool, tooltip string) {
 // EN: The announced link expires when Control stops confirming its presence.
 // Called by: dashboard integration; Calls: sync.Mutex.
 type dashboardRegistration struct {
-	healthURL string
-	mu        sync.Mutex
-	link      string
-	expires   time.Time
-	healthAt  time.Time
-	healthy   bool
+	healthURL        string
+	mu               sync.Mutex
+	link             string
+	expires          time.Time
+	seen             map[string]time.Time
+	healthAt         time.Time
+	healthy          bool
+	healthPending    bool
+	healthGeneration uint64
 }
 
 // FR: Yaegi charge le même registre pour les routeurs privé et public du plugin.
@@ -245,7 +258,10 @@ var dashboardRegistrations = struct {
 // FR: Seul le nom du dashboard local est configuré ; Control annonce sa propre URL.
 // EN: Only the local dashboard hostname is configured; Control announces its own URL.
 // Called by: New; Calls: newDashboardMenu.
-func newDashboardIntegration(next http.Handler, host, link, healthURL string) (http.Handler, error) {
+func newDashboardIntegration(next http.Handler, host, link, healthURL, key string, allow bool) (http.Handler, error) {
+	if len(key) < 32 {
+		return nil, errors.New("dashboard integration requires a discovery key of at least 32 bytes")
+	}
 	checkedLink := link
 	if checkedLink == "" {
 		checkedLink = "/"
@@ -255,6 +271,8 @@ func newDashboardIntegration(next http.Handler, host, link, healthURL string) (h
 		return nil, err
 	}
 	menu := handler.(*dashboardMenu)
+	menu.discoveryKey = key
+	menu.allowRegistration = allow
 	menu.link = link
 	if healthURL != "" {
 		health, err := url.Parse(healthURL)
@@ -264,10 +282,10 @@ func newDashboardIntegration(next http.Handler, host, link, healthURL string) (h
 	}
 	menu.healthURL = healthURL
 	dashboardRegistrations.Lock()
-	state := dashboardRegistrations.states[menu.host]
+	state := dashboardRegistrations.states[menu.host+":"+discoverySignature(key, "registry", "", nil)]
 	if state == nil {
 		state = &dashboardRegistration{}
-		dashboardRegistrations.states[menu.host] = state
+		dashboardRegistrations.states[menu.host+":"+discoverySignature(key, "registry", "", nil)] = state
 	}
 	dashboardRegistrations.Unlock()
 	menu.registration = state
@@ -284,13 +302,19 @@ func newDashboardIntegration(next http.Handler, host, link, healthURL string) (h
 // EN: This POST path must be exposed only to Control on a private entrypoint.
 // Called by: private middleware route; Calls: JSON and URL validation.
 func (m *dashboardMenu) register(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("Origin") != "" {
+	peer, _, peerErr := net.SplitHostPort(r.RemoteAddr)
+	address, addrErr := netip.ParseAddr(peer)
+	if !m.allowRegistration || peerErr != nil || addrErr != nil || (!address.IsPrivate() && !address.IsLoopback()) || r.Header.Get("Origin") != "" {
 		http.Error(w, "Forbidden", 403)
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 4097))
 	if err != nil || len(body) > 4096 {
 		http.Error(w, "Invalid announcement", 400)
+		return
+	}
+	if !validDiscoverySignature(m.discoveryKey, "request", r.Header, body) {
+		http.Error(w, "Forbidden", 403)
 		return
 	}
 	var announcement struct {
@@ -323,16 +347,37 @@ func (m *dashboardMenu) register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	m.registration.mu.Lock()
+	if m.registration.seen == nil {
+		m.registration.seen = make(map[string]time.Time)
+	}
+	now := time.Now()
+	for nonce, expiry := range m.registration.seen {
+		if !expiry.After(now) {
+			delete(m.registration.seen, nonce)
+		}
+	}
+	if _, used := m.registration.seen[announcement.Nonce]; used || len(m.registration.seen) >= 1024 {
+		m.registration.mu.Unlock()
+		http.Error(w, "Replay rejected", 403)
+		return
+	}
+	m.registration.seen[announcement.Nonce] = now.Add(time.Minute)
 	m.registration.link = announcement.ControlURL
 	if m.registration.healthURL != healthURL {
 		m.registration.healthURL = healthURL
 		m.registration.healthAt = time.Time{}
+		m.registration.healthPending = false
+		m.registration.healthGeneration++
 	}
 	m.registration.expires = time.Now().Add(90 * time.Second)
 	m.registration.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	json.NewEncoder(w).Encode(map[string]interface{}{"protocol": "pareflux.ingress.v1", "name": "Traefik", "dashboard_url": "https://" + m.host + "/dashboard/", "control_url": announcement.ControlURL, "nonce": announcement.Nonce, "expires_in": 90, "control_reachable": m.ready(r.Context())})
+	response, _ := json.Marshal(map[string]interface{}{"protocol": "pareflux.ingress.v1", "name": "Traefik", "dashboard_url": "https://" + m.host + "/dashboard/", "control_url": announcement.ControlURL, "nonce": announcement.Nonce, "expires_in": 90, "control_reachable": m.ready(r.Context()), "gate_version": pluginVersion, "range_decisions": rangeEnforcementReady(m.engineKey)})
+	stamp := strconv.FormatInt(time.Now().Unix(), 10)
+	w.Header().Set("X-Pareflux-Time", stamp)
+	w.Header().Set("X-Pareflux-Signature", discoverySignature(m.discoveryKey, "response", stamp, response))
+	w.Write(response)
 }
 
 // ready verifies a bounded native readiness response, not an SSO login page.
@@ -342,16 +387,47 @@ func (m *dashboardMenu) register(w http.ResponseWriter, r *http.Request) {
 func (m *dashboardMenu) ready(ctx context.Context) bool {
 	state := m.registration
 	state.mu.Lock()
-	defer state.mu.Unlock()
-	if state.healthURL == "" {
-		return time.Now().Before(state.expires)
+	if !time.Now().Before(state.expires) {
+		state.mu.Unlock()
+		return false
 	}
-	if !state.healthAt.IsZero() && time.Since(state.healthAt) < 15*time.Second {
-		return state.healthy
+	if state.healthURL == "" {
+		state.mu.Unlock()
+		return true
+	}
+	if state.healthPending || (!state.healthAt.IsZero() && time.Since(state.healthAt) < 15*time.Second) {
+		healthy := state.healthy
+		state.mu.Unlock()
+		return healthy
+	}
+	target := state.healthURL
+	state.healthPending = true
+	state.healthGeneration++
+	generation := state.healthGeneration
+	state.mu.Unlock()
+	healthy := probeControlHealth(ctx, target)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if generation != state.healthGeneration || target != state.healthURL {
+		return false
+	}
+	state.healthPending = false
+	if !time.Now().Before(state.expires) {
+		state.healthAt = time.Time{}
+		state.healthy = false
+		return false
 	}
 	state.healthAt = time.Now()
-	state.healthy = false
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, state.healthURL, nil)
+	state.healthy = healthy
+	return healthy
+}
+
+// probeControlHealth bounds readiness work outside the registration mutex.
+// FR: Une sonde lente ne sérialise ni les chargements du dashboard ni les annonces.
+// EN: A slow probe does not serialize dashboard loads or announcements.
+// Called by: dashboardMenu.ready; Calls: bounded HTTP GET, bounded JSON decoding.
+func probeControlHealth(ctx context.Context, target string) bool {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return false
 	}
@@ -368,8 +444,7 @@ func (m *dashboardMenu) ready(ctx context.Context) bool {
 	var health struct {
 		Status string `json:"status"`
 	}
-	state.healthy = json.Unmarshal(data, &health) == nil && health.Status == "ready"
-	return state.healthy
+	return json.Unmarshal(data, &health) == nil && health.Status == "ready"
 }
 
 // dashboardWarning localizes the availability tooltip without exposing internal addresses.
@@ -412,4 +487,69 @@ func dashboardWarning(language string) string {
 		return value
 	}
 	return values["en"]
+}
+
+// discoverySignature binds the entire announcement and its direction to a short-lived timestamp.
+// FR: La séparation requête/réponse empêche de réfléchir une annonce signée.
+// EN: Request/response separation prevents reflecting a signed announcement.
+// Called by: register; Calls: HMAC-SHA256.
+func discoverySignature(key, kind, stamp string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(key))
+	mac.Write([]byte("pareflux.discovery.v1\n" + kind + "\n" + stamp + "\n"))
+	mac.Write(body)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// validDiscoverySignature rejects altered, expired and future announcements before JSON processing.
+// FR: Les comparaisons de signatures sont réalisées en temps constant.
+// EN: Signature comparisons run in constant time.
+// Called by: register; Calls: discoverySignature, hmac.Equal.
+func validDiscoverySignature(key, kind string, header http.Header, body []byte) bool {
+	stamp := header.Get("X-Pareflux-Time")
+	n, err := strconv.ParseInt(stamp, 10, 64)
+	if err != nil || len(key) < 32 || time.Now().Unix()-n > 30 || n-time.Now().Unix() > 30 {
+		return false
+	}
+	expected, err := hex.DecodeString(discoverySignature(key, kind, stamp, body))
+	if err != nil {
+		return false
+	}
+	actual, err := hex.DecodeString(header.Get("X-Pareflux-Signature"))
+	return err == nil && hmac.Equal(expected, actual)
+}
+
+// rangeEnforcementReady advertises support only with a currently synchronized IP protection engine.
+// FR: Le simple chargement d'un menu désactivé ne prouve pas l'application des plages.
+// EN: Loading a disabled menu alone never proves range enforcement.
+// Called by: signed registration response; Calls: engine registry health.
+func rangeEnforcementReady(key string) bool {
+	engines.Lock()
+	defer engines.Unlock()
+	b := engines.values[key]
+	if key == "" || b == nil || b.engine == nil || b.engine.refs <= 0 {
+		return false
+	}
+	b.engine.decisions.mu.RLock()
+	overflow := b.engine.decisions.overflow
+	b.engine.decisions.mu.RUnlock()
+	if overflow {
+		return false
+	}
+	last := int64(0)
+	switch b.crowdsecMode {
+	case "live":
+		last = atomic.LoadInt64(&b.engine.lastLiveSuccess)
+	case "stream", "alone":
+		if atomic.LoadInt64(&b.engine.updateFailure) != 0 {
+			return false
+		}
+		last = atomic.LoadInt64(&b.engine.lastStreamSuccess)
+	default:
+		return false
+	}
+	limit := b.updateInterval*3 + b.failureGraceSeconds
+	if limit < 30 {
+		limit = 30
+	}
+	return last > 0 && time.Now().Unix()-last <= limit
 }
