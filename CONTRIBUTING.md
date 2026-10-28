@@ -1,36 +1,16 @@
-<!--
-###############################################################################
-# Public contribution guide
-# FR: Explique le parcours GitHub vers GitLab imposé par le catalogue Traefik.
-# EN: Explains the GitHub-to-GitLab contribution path required by the catalog.
-# Called by: PareFlux Gate contributors
-# Calls: GitHub pull requests and the primary GitLab promotion workflow
-###############################################################################
--->
-
+<!-- FR: Explique comment contribuer sans informations d’infrastructure internes. EN: Explains contributions without internal infrastructure details. Called by: contributors; Calls: GitHub issues and pull requests. -->
 # Contributing to PareFlux Gate
 
-## Why GitLab and GitHub are both used
+[Français](CONTRIBUTING.FR.md)
 
-PareFlux Gate is developed on the project's GitLab instance. GitLab is the
-primary development repository and contains intermediate commits, testing work,
-and development releases.
+Report problems and propose improvements through
+[GitHub issues](https://github.com/vandman/pareflux-traefik-gate/issues).
+For a bug, include the Gate and Traefik versions, expected and actual behavior,
+reproduction steps, and sanitized configuration and logs.
 
-GitHub is the public distribution and contribution channel because the Traefik
-Plugin Catalog only accepts plugins hosted in public GitHub repositories. Only
-versions considered sufficiently stable are promoted from GitLab to GitHub, so
-the GitHub history does not contain every intermediate development commit or
-version.
+Pull requests should explain the change and include relevant tests. They are
+reviewed before inclusion in a release. By contributing, you agree to license
+your contribution under Apache-2.0.
 
-## Pull request process
-
-Public issues and pull requests are welcome on GitHub. A proposed patch is first
-reviewed and tested without secrets. When accepted, it is integrated and
-validated in the primary GitLab repository, then included in a subsequent
-stable GitHub release.
-
-Please keep the pull request open while this integration is in progress. A
-merged pull request may not be available in a catalog release immediately.
-
-By contributing, you agree that your contribution is licensed under
-Apache-2.0, the license used by this project.
+Report vulnerabilities through the [private security channel](SECURITY.md),
+not a public issue. Never include live credentials or personal data.

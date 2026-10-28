@@ -8,8 +8,7 @@
 Gate needs CrowdSec; Control is the optional console. Identical resolved upstream
 configurations share one engine, synchronization workers and cache. Different
 keys or certificates create separate engines. Releasing the last Traefik
-configuration context cancels workers and outstanding HTTP calls. Real reload
-integration tests exercise this lifecycle.
+configuration context cancels workers and outstanding HTTP calls.
 
 Stream engines perform an initial synchronization before reporting healthy.
 Every poll requests a full snapshot, avoiding lost incremental changes during
@@ -115,11 +114,9 @@ policies are executed once.
 
 TTL/Redis accelerates live lookups and captcha results only. Configurations use
 separate versioned Redis namespaces; Redis eviction cannot remove stream bans.
-The vendored TTL cache uses a hash-verified patch against v0.1.3: before FIFO
-eviction it examines up to 64 positions for expired entries. Beyond that window,
-a valid entry may still be evicted. After `go mod vendor`, run
-`./scripts/patch-ttl-cache-vendor.sh`; it rejects unexpected sources and is
-idempotent.
+The local TTL cache examines up to 64 positions for expired entries before
+evicting its oldest entry. Beyond that window, a valid cached lookup or captcha
+result may be evicted; active stream bans remain in their separate store.
 
 Before enforcing outage refusals, configure a narrowly scoped, verified
 `clientTrustedIps` management address if needed. It bypasses **all** checks,

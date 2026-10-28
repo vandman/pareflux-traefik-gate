@@ -236,3 +236,28 @@ func TestDocumentationTargets(t *testing.T) {
 		}
 	}
 }
+
+// TestUserGuidesExcludeMaintainerDetails
+// FR: Empêche le retour des procédures et paramètres privés dans les guides utilisateurs.
+// EN: Prevents private procedures and settings from returning to user guides.
+// Called by: go test and release verification; Calls: local Markdown files.
+func TestUserGuidesExcludeMaintainerDetails(t *testing.T) {
+	root := filepath.Join("..", "..")
+	paths := []string{filepath.Join(root, "README.md"), filepath.Join(root, "LISEZMOI.md")}
+	guides, err := filepath.Glob(filepath.Join(root, "docs", "*.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths = append(paths, guides...)
+	for _, path := range paths {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, internal := range []string{"vm-runner", "OpenBao", "PAREFLUX_GITHUB_DEPLOY_KEY", "publish/v", "go mod vendor", "apply.py", "gitlab.nikolov.fr", "CI trust contract", "Contrat de confiance de la CI"} {
+			if strings.Contains(string(raw), internal) {
+				t.Errorf("%s contains maintainer detail %q", path, internal)
+			}
+		}
+	}
+}

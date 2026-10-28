@@ -7,8 +7,8 @@ Called by: README and LISEZMOI; Calls: configuration.New and runtime settings.
 
 [Installation](../README.md) · [Français](configuration.FR.md)
 
-These are the exact JSON/YAML option names and constructor defaults from
-`pkg/configuration/configuration.go`. Durations are seconds unless stated
+These are the JSON/YAML option names and default values.
+Durations are seconds unless stated
 otherwise; list types use YAML sequences. A `File` setting takes precedence
 over its inline counterpart and refers to a file readable **inside Traefik**.
 Empty values do not necessarily mean a feature is usable without credentials.

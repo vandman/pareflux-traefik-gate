@@ -7,8 +7,8 @@ Called by: README and LISEZMOI; Calls: configuration.New and runtime settings.
 
 [Installation](../LISEZMOI.md) · [English](configuration.EN.md)
 
-Voici les noms JSON/YAML exacts et les valeurs du constructeur dans
-`pkg/configuration/configuration.go`. Les durées sont en secondes sauf indication
+Voici les noms JSON/YAML des options et leurs valeurs par défaut.
+Les durées sont en secondes sauf indication
 contraire ; les listes sont des séquences YAML. Une option `File` prime sur sa
 valeur directe et désigne un fichier lisible **dans Traefik**. Une valeur vide
 ne signifie pas que le service fonctionne sans identifiants. AppSec hérite du

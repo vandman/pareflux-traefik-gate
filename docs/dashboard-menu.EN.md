@@ -92,10 +92,7 @@ evidence matches. Only the private instance accepts signed announcements. The
 public instance keeps `dashboardRegistrationAllowed: false`. Without a valid
 shared key, `dashboardIntegration` cannot be constructed.
 
-PareFlux Control deployment tooling can generate this integration with
-`apply.py --dashboard-menu`; that helper belongs to the deployment project,
-not the plugin. Check its routes and network restrictions before enabling it.
-The domains above are examples; no site domain is hardcoded.
+The domains above are examples; adapt all addresses to your installation.
 
 ## Display and status
 

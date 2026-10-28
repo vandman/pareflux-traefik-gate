@@ -82,7 +82,7 @@ ci-dessous choisit explicitement `stream`.
 
 ## Installation
 
-L’exemple public utilise la version **v0.1.24**. La configuration statique
+L’exemple public utilise la version **v0.1.25**. La configuration statique
 charge le plugin au démarrage ; la configuration dynamique l’active et le
 rattache aux routes à protéger. Déclarer le plugin seul ne protège aucune route.
 
@@ -128,7 +128,7 @@ experimental:
   plugins:
     parefluxgate:
       moduleName: github.com/vandman/pareflux-traefik-gate
-      version: v0.1.24
+      version: v0.1.25
 ```
 
 Redémarrer Traefik après un changement de version du plugin. Utiliser le
@@ -409,54 +409,14 @@ TLS vers une base externe et des sauvegardes durables. Le changement de base
 d'une installation CrowdSec existante ne migre pas automatiquement ses
 machines, clefs de remédiation, alertes ou décisions existantes.
 
-## Vérification
+## Aide et contributions
 
-```bash
-go test -race ./...
-go mod vendor
-./scripts/patch-ttl-cache-vendor.sh
-```
-
-Chaque version doit aussi être chargée comme plugin local dans l'image Traefik épinglée et passer les tests intégrés de requêtes, blocages et rechargements.
-Voir la [méthode de mesure](BENCHMARKS.FR.md) pour les performances.
-
-## Dépôts et versions publiques
-
-PareFlux est maintenu par un auteur français qui souhaite disposer d'une
-documentation complète et de premier niveau en français. Une version anglaise
-complète est maintenue en parallèle, car l'anglais est la langue internationale
-de fait pour la collaboration technique et l'écosystème Traefik.
-
-Le [dépôt GitLab](https://gitlab.nikolov.fr/application/pareflux-traefik-gate)
-est le dépôt de développement principal et contient les commits intermédiaires
-et les versions de développement. Le [dépôt GitHub](https://github.com/vandman/pareflux-traefik-gate)
-est le canal public de distribution et de contribution, car le catalogue de
-plugins Traefik accepte uniquement les dépôts GitHub publics.
-
-Seuls des instantanés stables sont promus vers GitHub. Un tag GitLab protégé
-nommé `publish/vX.Y.Z` crée un unique commit public et le tag GitHub immuable
-`vX.Y.Z`. Les issues et pull requests publiques sont les bienvenues ; leur
-parcours d'intégration est décrit dans
-[CONTRIBUTING.FR.md](CONTRIBUTING.FR.md).
-
-Le [guide de publication du catalogue](docs/publication.FR.md) décrit la
-préparation automatique des liens du README et les contrôles de publication.
+Utiliser le [dépôt GitHub](https://github.com/vandman/pareflux-traefik-gate)
+pour signaler un problème ou proposer une amélioration. Pour une vulnérabilité,
+utiliser le [canal de signalement privé](SECURITY.FR.md).
 
 ## Licence
 
 Dérivé de l’amont Apache-2.0 v1.6.0 ; les attributions et modifications sont décrites dans [UPSTREAM.md](https://github.com/vandman/pareflux-traefik-gate/blob/main/UPSTREAM.md). PareFlux utilise son propre cache TTL Apache-2.0.
 
-Apache-2.0. Les dépendances GPL-3.0, AGPL et de licence inconnue sont refusées.
-
-## Contrat de confiance de la CI
-
-Les branches et merge requests s’exécutent sans secret permanent de publication.
-Une branche source terminant par `-nr` ne crée pas de pipeline. Les tests Docker
-utilisent `vm-runner` et le daemon de sa VM jetable ; les autres contrôles utilisent
-le runner conteneur. Seuls les tags protégés peuvent recevoir les credentials de
-publication. Les tags sont créés depuis le poste opérateur ; le push Git par job
-token est désactivé. Déploiements, administration de l’identité et maintenance
-des hôtes runners restent pilotés depuis le poste. Aucune clé SSH de production,
-aucun kubeconfig ni identité OpenBao de production n’entre dans ces jobs.
-
-[Protection, limites et politiques de panne](docs/security-runtime.FR.md).
+Apache-2.0.

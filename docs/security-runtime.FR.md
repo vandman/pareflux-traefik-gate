@@ -9,7 +9,7 @@ Gate a besoin de CrowdSec ; Control est la console facultative. Les configuratio
 amont résolues identiques partagent un moteur, ses tâches de synchronisation et
 son cache. Une autre clef ou un autre certificat crée un moteur distinct. La
 libération du dernier contexte de configuration Traefik annule les tâches et
-appels HTTP. Les tests intégrés de rechargement réel exercent ce cycle de vie.
+appels HTTP.
 
 Le moteur stream effectue une première synchronisation avant d’annoncer un état
 sain. Chaque interrogation demande un instantané complet pour éviter de perdre
@@ -122,11 +122,10 @@ pas l’inspection. Les politiques identiques d’entrypoint et de routeur sont 
 
 TTL/Redis accélère seulement les consultations live et les captchas. Chaque
 configuration utilise un espace Redis versionné distinct ; une éviction Redis
-ne retire pas de blocage stream. Le cache TTL embarqué utilise un correctif vérifié
-par condensat sur v0.1.3 : avant éviction FIFO, il examine au plus 64 positions
-pour trouver des entrées expirées. Au-delà, une entrée valide peut encore être
-évincée. Après `go mod vendor`, exécuter `./scripts/patch-ttl-cache-vendor.sh` ;
-il refuse une source inattendue et est idempotent.
+ne retire pas de blocage stream. Le cache TTL local examine au plus 64 positions pour trouver une entrée expirée
+avant d’évincer la plus ancienne. Au-delà, un résultat de consultation ou de
+captcha encore valide peut être évincé ; les blocages stream actifs restent
+dans leur magasin distinct.
 
 Avant de rendre les pannes bloquantes, prévoir si nécessaire une adresse de
 gestion vérifiée et précisément limitée dans `clientTrustedIps`. Elle contourne

@@ -93,10 +93,7 @@ Seule l’instance privée autorise les annonces signées. La publique garde
 `dashboardRegistrationAllowed: false`. Sans clef partagée valide,
 `dashboardIntegration` ne peut pas être construit.
 
-Le déploiement de PareFlux Control peut générer cette intégration avec
-`apply.py --dashboard-menu` ; cet outil appartient au projet de déploiement,
-pas au plugin. Vérifier ses routes et restrictions réseau avant activation.
-Les domaines ci-dessus sont des exemples, aucun domaine de site n’est codé en dur.
+Les domaines ci-dessus sont des exemples ; adapter toutes les adresses à son installation.
 
 ## Affichage et état
 
